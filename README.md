@@ -71,14 +71,19 @@ Both rigs run the same image with FP8 KV cache, `--max-model-len 65536`, `--max-
 | SMs per card | 56 | 68 |
 | Power limit, clock under load | 150 W, locked at 1590 MHz | 275 W, about 2.0 GHz |
 
-**Decode.** N concurrent streams, each generating exactly 512 tokens. *Per stream* is the mean rate of one stream from its first token to its last. *Total* is all generated tokens over the wall time from the first token of any stream to the last one; this is the server throughput. With 32 streams only 16 run at a time and the rest wait in the queue.
+**Decode.** N concurrent streams, each generating exactly 512 tokens. Two different rates are reported, so N × per-stream does not equal the total:
 
-| Streams | T10: per stream | T10: total | 2080 Ti: per stream | 2080 Ti: total |
-|---:|---:|---:|---:|---:|
-| 1 | 88.2 | 88.4 | 94.4 | 94.6 |
-| 8 | 47.8 | 368.5 | 49.8 | 382.6 |
-| 16 | 36.9 | 564.0 | 36.8 | 562.0 |
-| 32 | 36.0 | 553.6 | 36.6 | 561.8 |
+- *Per stream* is the rate one user sees: a stream's own tokens over its own time from first to last token, averaged over streams.
+- *Total* is the server throughput: all generated tokens over the wall time from the first token of any stream to the last token of any stream.
+
+Streams do not run side by side for the whole window. Their prefills are scheduled one after another, so they start at slightly different times, and the server runs at most 16 at once (`--max-num-seqs 16`). With 8 streams, for example, one stream generates for 511 / 47.8 ≈ 10.7 s, but the whole run spans 8 × 512 / 368.5 ≈ 11.1 s. With 32 streams the requests run in two waves of 16, so the total stays at about 16 × 36 ≈ 560 tok/s.
+
+| Streams | Running at once | T10: per stream | T10: total | 2080 Ti: per stream | 2080 Ti: total |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 1 | 88.2 | 88.4 | 94.4 | 94.6 |
+| 8 | 8 | 47.8 | 368.5 | 49.8 | 382.6 |
+| 16 | 16 | 36.9 | 564.0 | 36.8 | 562.0 |
+| 32 | 16 (16 queued) | 36.0 | 553.6 | 36.6 | 561.8 |
 
 **Prefill.** A single request with a prompt of random words and `max_tokens=1`, measuring time to first token (median of three). Each prompt starts with a random nonce, so the prefix cache never hits.
 
