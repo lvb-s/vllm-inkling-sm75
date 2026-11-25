@@ -20,4 +20,5 @@ COPY plugin/ ${SITE}/
 COPY patches/patch_fork.py /tmp/patch_fork.py
 RUN /opt/vllm-def/.venv/bin/python /tmp/patch_fork.py \
  && /opt/vllm-def/.venv/bin/python -m compileall -q /opt/vllm-def/vllm/models/inkling2 ${SITE}/inkling_t10 \
+ && /opt/vllm-def/.venv/bin/python -c "from inkling_t10 import pcie_allreduce; pcie_allreduce.ext()" \
  && /opt/vllm-def/.venv/bin/python -c "import importlib.metadata as m; print('humming', m.version('humming-kernels')); print([e.name for e in m.entry_points(group='vllm.general_plugins')])"

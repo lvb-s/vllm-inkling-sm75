@@ -60,3 +60,9 @@ def register():
         return _should_custom_ar(self, inp)
 
     CustomAllreduce.should_custom_ar = should_custom_ar
+
+    # Four PCIe-only GPUs (asus2 T10s): decode-size fp16 all-reduces go to the
+    # push kernel (posted P2P writes instead of the fork's remote reads).
+    from inkling_t10 import pcie_allreduce
+
+    pcie_allreduce.install(CustomAllreduce)

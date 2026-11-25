@@ -408,6 +408,7 @@ Each card computes its 6 query heads, 2 KV heads and 32 experts. The outputs of 
 
 - Upstream on Hopper/Blackwell fuses the all-reduce with the convolution and the AttnRes mix through NVLink multicast memory (`ops/allreduce.py`). That needs sm_90+, so on Turing `Inkling2AllReduceWorkspace.create` returns `None` and the path is vLLM's regular all-reduce followed by `conv_mix`.
 - The fork's P2P custom all-reduce has a bf16 kernel that is an invalid device function on sm_75. The `inkling_t10` plugin routes bf16 messages to NCCL and fp16 messages (up to 8 MB) to the P2P kernel. GEMM outputs on Turing are fp16, so the hot path uses the fast kernel.
+- With four PCIe-only cards, fp16 messages of 32–512 KiB go to a push kernel instead (`plugin/inkling_t10/pcie_allreduce.cu`). The fork's two-stage kernel pulls peers' inputs with remote reads, which are slower than posted writes on the Broadwell root complex. The push kernel has each card write the shards of its input to their owners, which reduce them in the fork's order and write the sum back to every card, so results are bitwise identical. The extension is compiled at image build time.
 
 NCCL on four T10s takes about 37 µs for one token (4.5 KiB), 237 µs for 197 tokens and 1.9 ms for 2048. In the decode profile all-reduce takes about 1.7 ms per token, but only about 1 ms of that is transfer. The rest is waiting for the slowest card: an all-reduce is a synchronisation point, and any imbalance (MoE load, different experts per card) accumulates there.
 

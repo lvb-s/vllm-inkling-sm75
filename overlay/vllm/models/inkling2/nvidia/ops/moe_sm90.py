@@ -30,6 +30,13 @@ if TYPE_CHECKING:
 # Row block size when no Humming tuning range covers the row count.
 _DEFAULT_BLOCK_M = 64
 
+# Turing (fp16) single-token decode (up to 2 expected local rows): swept on
+# a T10, `[8, 64, 128]` blocks without Stream-K, with these pipeline stages,
+# are 7% (w13) and 25% (w2) faster than the heuristic. Larger batches gained
+# nothing consistent.
+_TURING_DECODE_ROWS = 2
+_TURING_DECODE_STAGES = {"w13": 4, "w2": 2}
+
 
 @triton.jit
 def _select_kernel(
@@ -236,11 +243,18 @@ class HummingExperts:
                 gemm_type=GemmType.INDEXED,
             )
             # bf16 Stream-K atomics change the sum from run to run. fp16
-            # output (Turing) keeps the heuristic, which splits K=2304 across
-            # the SMs when only a few expert rows are live.
-            if self.dtype != torch.float16:
-                for _, _, kernel_config in tuning:
+            # output (Turing) keeps the heuristic above single-token decode.
+            for _, upper, kernel_config in tuning:
+                if self.dtype != torch.float16:
                     kernel_config["use_stream_k"] = False
+                elif upper <= _TURING_DECODE_ROWS:
+                    kernel_config.update(
+                        block_shape=[8, 64, 128],
+                        warp_shape=[8, 64, 32],
+                        use_stream_k=False,
+                        num_ctas_per_sm=2,
+                        num_stages=_TURING_DECODE_STAGES[name],
+                    )
             self.configs[name] = config
             self.tensors[name] = tensors
             self.tunings[name] = tuning
