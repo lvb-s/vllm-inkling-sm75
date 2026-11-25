@@ -7,11 +7,13 @@ The port runs on top of [weicj/vLLM-2080Ti-Definitive](https://github.com/weicj/
 | | 4× Tesla T10 16 GB, TP=4 | 2× RTX 2080 Ti 22 GB, NVLink, TP=2 |
 |---|---:|---:|
 | Decode, 1 stream | 88 tok/s | 94 tok/s |
-| Decode, 16 streams (total) | 564 tok/s | 562 tok/s |
+| Decode, 16 streams (total) | 613 tok/s | 562 tok/s¹ |
 | Prefill of a 35k-token prompt (TTFT) | 10.1 s | 9.5 s |
 | Max context / KV pool | 65k / 163k tokens | 65k / 167k tokens |
 
 Text and image input both work.
+
+¹ The RTX 2080 Ti numbers were measured before the Turing decode-attention kernel (see [below](#a-decode-kernel-without-tldot)); on the T10 rig that kernel raised 16-stream throughput from 564 to 613 tok/s.
 
 **Contents**
 
@@ -29,6 +31,7 @@ Text and image input both work.
   - [Vision](#vision)
 - [Porting to sm_75](#porting-to-sm_75)
 - [Faster decode attention on Turing](#faster-decode-attention-on-turing)
+  - [A decode kernel without `tl.dot`](#a-decode-kernel-without-tldot)
 - [Decode profile](#decode-profile)
 - [Quality](#quality)
 - [Layout](#layout)
@@ -62,7 +65,7 @@ python3 tests/image_chat.py            # draws a test image and asks the model t
 
 ## Benchmarks
 
-Both rigs run the same image with FP8 KV cache, `--max-model-len 65536`, `--max-num-seqs 16`, `--gpu-memory-utilization 0.92`, breakable CUDA graphs and vision enabled.
+Both rigs run the same flags with FP8 KV cache, `--max-model-len 65536`, `--max-num-seqs 16`, `--gpu-memory-utilization 0.92`, breakable CUDA graphs and vision enabled. The T10 decode numbers include the Turing decode-attention kernel; the RTX 2080 Ti numbers and both prefill tables were measured before it (prefill does not use that kernel, and re-measured T10 prefill is unchanged).
 
 | | 4× Tesla T10 16 GB | 2× RTX 2080 Ti 22 GB |
 |---|---|---|
@@ -76,14 +79,14 @@ Both rigs run the same image with FP8 KV cache, `--max-model-len 65536`, `--max-
 - *Per stream* is the rate one user sees: a stream's own tokens over its own time from first to last token, averaged over streams.
 - *Total* is the server throughput: all generated tokens over the wall time from the first token of any stream to the last token of any stream.
 
-Streams do not run side by side for the whole window. Their prefills are scheduled one after another, so they start at slightly different times, and the server runs at most 16 at once (`--max-num-seqs 16`). With 8 streams, for example, one stream generates for 511 / 47.8 ≈ 10.7 s, but the whole run spans 8 × 512 / 368.5 ≈ 11.1 s. With 32 streams the requests run in two waves of 16, so the total stays at about 16 × 36 ≈ 560 tok/s.
+Streams do not run side by side for the whole window. Their prefills are scheduled one after another, so they start at slightly different times, and the server runs at most 16 at once (`--max-num-seqs 16`). With 8 streams, for example, one stream on the T10 generates for 511 / 50.4 ≈ 10.1 s, but the whole run spans 8 × 512 / 368.0 ≈ 11.1 s. With 32 streams the requests run in two waves of 16, so the total stays below 16 × 41.7 ≈ 667 tok/s by the gaps between waves.
 
 | Streams | Running at once | T10: per stream | T10: total | 2080 Ti: per stream | 2080 Ti: total |
 |---:|---:|---:|---:|---:|---:|
-| 1 | 1 | 88.2 | 88.4 | 94.4 | 94.6 |
-| 8 | 8 | 47.8 | 368.5 | 49.8 | 382.6 |
-| 16 | 16 | 36.9 | 564.0 | 36.8 | 562.0 |
-| 32 | 16 (16 queued) | 36.0 | 553.6 | 36.6 | 561.8 |
+| 1 | 1 | 88.6 | 88.8 | 94.4 | 94.6 |
+| 8 | 8 | 50.4 | 368.0 | 49.8 | 382.6 |
+| 16 | 16 | 41.5 | 612.7 | 36.8 | 562.0 |
+| 32 | 16 (16 queued) | 41.7 | 637.2 | 36.6 | 561.8 |
 
 **Prefill.** A single request with a prompt of random words and `max_tokens=1`, measuring time to first token (median of three). Each prompt starts with a random nonce, so the prefix cache never hits.
 
@@ -105,7 +108,7 @@ Streams do not run side by side for the whole window. Their prefills are schedul
 **Why the rigs differ.**
 
 - **One stream: the 2080 Ti is 7 % faster.** At TP=2 each card reads twice as many weights per token as at TP=4, but the 2080 Ti has faster memory, higher clocks and more SMs, which roughly cancels out. The gain comes from the interconnect: there are 96 all-reduces per token, and one between two cards over NVLink is shorter than one between four cards over PCIe and the CPU. Most of batch-1 decode is bound by the launch latency of small kernels, which is the same on both rigs, so the difference stays small.
-- **16 streams: about 560 tok/s on both rigs.** A Nsight Systems profile at 16 streams shows the GPU busy 97.7 % of the time with 92 % of kernel time inside CUDA graphs, so the CPU is not the limit. A third of each step goes to the decode attention kernel (250 µs per call). Triton 3.7 never emits tensor-core instructions on sm_75, so its `tl.dot` runs as fp32 FMA on a 16-row tile (only 3 rows are useful) and spends its time on shared-memory bank conflicts. The rest is MoE (8.5 ms per step), the custom all-reduce (4.7 ms) and cuBLAS gemv (3.7 ms).
+- **16 streams.** Before the Turing decode kernel both rigs flattened at about 560 tok/s. A Nsight Systems profile on the T10 rig showed the GPU busy 97.7 % of the time with 92 % of kernel time inside CUDA graphs, so the CPU was not the limit; a third of each step went to decode attention. The new kernel cut that share, and the rest of the step goes mostly to MoE (8.5 ms), the custom all-reduce (4.7 ms) and cuBLAS gemv (3.7 ms).
 - **1k prefill: the T10 rig is faster.** A short prefill is mostly fixed overhead (scheduling, kernel launches, all-reduce), and with four cards each one does half as much work.
 - **8k and 32k prefill: the 2080 Ti is 6–13 % faster.** Here GEMM and attention dominate, and the faster cards win. Throughput drops from 8k to 32k on both rigs because the full-attention layers grow quadratically with length.
 
@@ -432,6 +435,7 @@ The encoder takes about 1–2 ms per card per image.
 | FP8 (`cvt.e4m3x2`, `fp8e4nv`) | FP8 KV cache | cache stored as uint8, encoded and decoded on the bits | `ops/e4m3.py` |
 | `cvt.rn.bf16.f32` | bf16 rounding in Triton | round-to-nearest-even on the bits | `ops/vision.py: _bf16` |
 | `cp.async` | no Triton software pipeline | smaller tiles, more CTAs | `plan_decode_attention` |
+| tensor-core `tl.dot` (Triton 3.7 emits FMA on sm_75) | decode attention spends its time on shared-memory bank conflicts | a decode kernel without `tl.dot` | `_rel_decode_turing_kernel` |
 | PDL (`griddepcontrol`) | overlap of dependent kernels | `gdc_wait` compiles to nothing | `ops/__init__.py` |
 | `vllm_flash_attn` (sm_80+) | ViT attention | memory-efficient SDPA in fp16 | `vision.py` |
 | bf16 custom all-reduce | invalid device function | bf16 to NCCL, fp16 to P2P | `plugin/inkling_t10` |
@@ -537,6 +541,59 @@ Behaviour on sm_80+ is unchanged, and the Turing branch does not fire for large 
 | Local layer, full window | 48 | 28 |
 
 End to end on 4× T10, one stream went from 80.3 to 87.5 tok/s. At 16k the gain almost disappears: there are enough keys to fill the GPU anyway, and the kernel is bound by memory bandwidth.
+
+### A decode kernel without `tl.dot`
+
+That fix helped one stream but not batches. At 16 streams `_rel_attention_kernel` still took about 250 µs per call, a third of every decode step, although 16 requests with ~600 tokens of context hold only ~4 MB of KV per call. Nsight Compute on that launch:
+
+- DRAM throughput 5 %, L1/shared-memory pipe 89 %, and 58 % of warp stalls waiting for the MIO queue;
+- 38 k global-load instructions, but 646 k shared-memory loads producing 7 M wavefronts, 4.9 M of them bank conflicts.
+
+The TTGIR explains it: both `tl.dot` calls use `dot_op` operands with a `#blocked` parent and `inputPrecision = tf32`, and there is no `#mma` layout at all. A minimal probe confirms that Triton 3.7.1 never emits `mma.sync` for fp16 `tl.dot` on sm_75, at any shape. Every dot becomes fp32 FMA fed through shared memory, on a 16-row tile of which a decode token uses 3 (the GQA group at TP=4). `F16_DOT` changed only the precision.
+
+`_rel_decode_turing_kernel` (in `ops/attention_sm90.py`) handles one decode token per request without `tl.dot`:
+
+- The rows are the GQA group padded to a power of two (4, not 16).
+- K and V are loaded key-major, `[1, BLOCK_N, D]`, so loads are vectorised along the head dimension, and decoded from E4M3 in place.
+- $q \cdot k$ is a product reduced over $D$ inside a warp; $p \cdot v$ is a plain multiply-add.
+- Every key slot $n$ of the 16-key block keeps its own online-softmax state $m_{g,n}$, $\ell_{g,n}$, $a_{g,n,:}$, so the loop has no reduction across keys and no layout conversion. The slots merge once at the end with the same exact LSE formula as split-KV:
+
+$$
+M_g = \max_n m_{g,n}, \qquad
+w_{g,n} = 2^{m_{g,n} - M_g}, \qquad
+o_g = \frac{\sum_n w_{g,n}\, a_{g,n,:}}{\sum_n w_{g,n}\, \ell_{g,n}}, \qquad
+\mathrm{lse}_{2,g} = M_g + \log_2 \sum_n w_{g,n}\, \ell_{g,n}
+$$
+
+```python
+for i in range(num_iters):
+    keys = (n_lo + split + i * num_splits) * BLOCK_N + offs_n
+    page = tl.load(block_table + keys // PAGE, mask=key_valid, other=0)
+    kv_ptrs = (page * stride_kv_blk + (keys % PAGE) * stride_kv_slot + kv_off)[None, :, None] + offs_d[None, None, :]
+    k = e4m3_to_fp32(tl.load(K + kv_ptrs, ...))            # [1, BLOCK_N, D]
+    s = tl.sum(q * k, 2)                                    # [GP, BLOCK_N], q pre-scaled by softmax_scale * log2(e)
+    s = tl.where(visible, s + bias * LOG2E, float("-inf"))
+    m_new = tl.maximum(m_i, s)                              # per key slot: no reduction over keys
+    alpha = tl.exp2(m_i - m_safe); p = tl.exp2(s - m_safe)
+    l_i = l_i * alpha + p
+    v = e4m3_to_fp32(tl.load(V + kv_ptrs, ...))
+    acc = acc * alpha[:, :, None] + p[:, :, None] * v       # [GP, BLOCK_N, D]
+    m_i = m_new
+```
+
+The kernel has its own split plan, swept on a T10 over 1–16 requests and 200–16k keys: about $2 \cdot \mathrm{SMs} / \mathrm{work}$ splits for full layers and $\mathrm{SMs} / \mathrm{work}$ for local ones, at least 3, where work = requests × KV heads. Splits with no keys write an empty partial and return. The old kernel still serves speculative verify, the DSpark draft and sm_80+.
+
+| Kernel time on one T10, same split count for both | Old, µs | New, µs |
+|---|---:|---:|
+| 1 request, 2k context, full layer | 37.7 | 22.8 |
+| 1 request, 2k context, local layer | 30.4 | 19.1 |
+| 4 requests, 2k context, full layer | 130.6 | 31.7 |
+| 16 requests, 600 context, full layer | 157.9 | 75.3 |
+| 16 requests, 600 context, local layer | 185.4 | 41.3 |
+| 16 requests, 2k context, full layer | 450.1 | 99.6 |
+| 16 requests, 5k context, full layer | 1130.5 | 183.6 |
+
+The outputs match the old kernel to one bf16 ulp (max |Δ| 2·10⁻³ on the gated output). End to end on 4× T10, 16 streams went from 564 to 613 tok/s and 32 streams from 554 to 637 tok/s; one stream stayed at 88 tok/s, where attention was already a small share of the step.
 
 ## Decode profile
 

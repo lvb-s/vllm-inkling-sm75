@@ -397,9 +397,13 @@ def plan_decode_attention(
         return 0
     work = num_reqs * num_kv_heads
     num_sms = num_compute_units()
+    turing = not current_platform.has_device_capability(80)
+    if turing and max_query_len == 1:
+        # `_rel_decode_turing_kernel`, swept on T10 over 1-16 requests and
+        # 200-16k keys.
+        return max(3, (num_sms if is_local else 2 * num_sms) // work)
     # Turing (16-key blocks, see `rel_attention`) has no cp.async pipelining:
     # a split is a chain of dependent loads, and more, shorter splits overlap.
-    turing = not current_platform.has_device_capability(80)
     if is_local:
         if work <= (16 if max_query_len <= 2 else 8):
             splits = triton.cdiv(rel_extent - 1, _FA4_BLOCK_N) + 1

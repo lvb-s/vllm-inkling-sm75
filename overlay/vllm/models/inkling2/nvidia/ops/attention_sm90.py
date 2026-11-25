@@ -31,6 +31,9 @@ MODE_OUT_LSE = 0
 MODE_GATED = 1
 MODE_PARTIAL = 2
 
+_TURING_DECODE_BLOCK_N = 16
+_TURING_DECODE_WARPS = 4
+
 
 @triton.jit
 def _sigmoid(x):
@@ -246,6 +249,148 @@ def _rel_attention_kernel(
             o = o * _sigmoid(lse2 * 0.6931471805599453 - sink.to(tl.float32))[:, None]
         tl.store(
             Out + token[:, None] * stride_out_t + cols,
+            o.to(Out.dtype.element_ty),
+            mask=row_valid[:, None],
+        )
+    else:
+        part = (split * num_tokens + token) * H + head
+        tl.store(Lse + part, lse2, mask=row_valid)
+        tl.store(Out + part[:, None] * D + offs_d[None, :], o, mask=row_valid[:, None])
+
+
+@triton.jit
+def _rel_decode_turing_kernel(
+    Q,
+    K,
+    V,
+    Rel,
+    BlockTable,
+    SeqLens,
+    CuSeqlensQ,
+    Out,
+    Lse,
+    Gate,
+    Sink,
+    softmax_scale,
+    num_tokens,
+    num_splits,
+    stride_q_t,
+    stride_q_h,
+    stride_kv_blk,
+    stride_kv_slot,
+    stride_kv_h,
+    stride_rel_t,
+    stride_bt,
+    stride_out_t,
+    stride_gate,
+    stride_sink,
+    H: tl.constexpr,
+    G: tl.constexpr,
+    GP: tl.constexpr,
+    D: tl.constexpr,
+    E: tl.constexpr,
+    PAGE: tl.constexpr,
+    WINDOW: tl.constexpr,
+    MODE: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+):
+    # One decode token per request, `rel_attention`'s grid without the query
+    # tile axis. Triton has no tensor-core dot on sm_75 (it lowers `tl.dot`
+    # to FMA through shared memory), so q.k and p.v are products reduced in
+    # registers over the GQA group padded to GP rows. Every key slot of the
+    # block keeps its own online-softmax state; the slots merge once at the
+    # end, so the loop has no reduction across keys.
+    E_PAD: tl.constexpr = E + 256
+    LOG2E: tl.constexpr = 1.4426950408889634
+    kv_head = tl.program_id(0) // num_splits
+    split = tl.program_id(0) % num_splits
+    req = tl.program_id(1)
+    token = tl.load(CuSeqlensQ + req).to(tl.int64)
+    seqlen_k = tl.load(SeqLens + req)
+    pos = seqlen_k - 1
+    n_lo = 0
+    if WINDOW > 0:
+        n_lo = tl.maximum(pos - (WINDOW - 1), 0) // BLOCK_N
+    n_hi = (seqlen_k + BLOCK_N - 1) // BLOCK_N
+    num_iters = tl.maximum(n_hi - n_lo - split + num_splits - 1, 0) // num_splits
+
+    g = tl.arange(0, GP)
+    head = kv_head * G + g
+    row_valid = g < G
+    offs_n = tl.arange(0, BLOCK_N)
+    offs_d = tl.arange(0, D)
+    if MODE == 2 and num_iters == 0:
+        part = (split * num_tokens + token) * H + head
+        tl.store(Lse + part, tl.full([GP], float("-inf"), tl.float32), mask=row_valid)
+        tl.store(
+            Out + part[:, None] * D + offs_d[None, :],
+            tl.zeros([GP, D], tl.float32),
+            mask=row_valid[:, None],
+        )
+        return
+    q = tl.load(
+        Q
+        + token * stride_q_t
+        + head[:, None, None] * stride_q_h
+        + offs_d[None, None, :],
+        mask=row_valid[:, None, None],
+        other=0.0,
+    ).to(tl.float32) * (softmax_scale * LOG2E)
+    # A lone decode token ends its shear tile at `past + 1 = seqlen_k`.
+    rel_base = (seqlen_k + 127) // 128 * 128 - E_PAD
+    rel_row = Rel + token * stride_rel_t + head * E_PAD - rel_base
+
+    m_i = tl.full([GP, BLOCK_N], float("-inf"), tl.float32)
+    l_i = tl.zeros([GP, BLOCK_N], tl.float32)
+    acc = tl.zeros([GP, BLOCK_N, D], tl.float32)
+    block_table = BlockTable + req.to(tl.int64) * stride_bt
+    kv_off = kv_head * stride_kv_h
+    for i in range(num_iters):
+        n = n_lo + split + i * num_splits
+        keys = n * BLOCK_N + offs_n
+        key_valid = keys < seqlen_k
+        page = tl.load(block_table + keys // PAGE, mask=key_valid, other=0)
+        kv_ptrs = (
+            page.to(tl.int64) * stride_kv_blk + (keys % PAGE) * stride_kv_slot + kv_off
+        )
+        kv_ptrs = kv_ptrs[None, :, None] + offs_d[None, None, :]
+        k = e4m3_to_fp32(tl.load(K + kv_ptrs, mask=key_valid[None, :, None], other=0))
+        s = tl.sum(q * k, 2)
+        dist = pos - keys[None, :]
+        visible = (dist >= 0) & key_valid[None, :] & row_valid[:, None]
+        if WINDOW > 0:
+            visible &= dist < WINDOW
+        bias = tl.load(
+            rel_row[:, None] + keys[None, :], mask=visible & (dist < E), other=0.0
+        )
+        s = tl.where(visible, s + bias.to(tl.float32) * LOG2E, float("-inf"))
+        m_new = tl.maximum(m_i, s)
+        m_safe = tl.where(m_new == float("-inf"), 0.0, m_new)
+        alpha = tl.exp2(m_i - m_safe)
+        p = tl.exp2(s - m_safe)
+        l_i = l_i * alpha + p
+        v = e4m3_to_fp32(tl.load(V + kv_ptrs, mask=key_valid[None, :, None], other=0))
+        acc = acc * alpha[:, :, None] + p[:, :, None] * v
+        m_i = m_new
+
+    m_row = tl.max(m_i, 1)
+    m_row_safe = tl.where(m_row == float("-inf"), 0.0, m_row)
+    w = tl.exp2(m_i - m_row_safe[:, None])
+    l_row = tl.sum(l_i * w, 1)
+    o = tl.sum(acc * w[:, :, None], 1)
+    empty = l_row == 0.0
+    o = o / tl.where(empty, 1.0, l_row)[:, None]
+    lse2 = tl.where(empty, float("-inf"), m_row + tl.log2(tl.where(empty, 1.0, l_row)))
+    if MODE == 1:
+        cols = head[:, None] * D + offs_d[None, :]
+        gate = tl.load(
+            Gate + token * stride_gate + cols, mask=row_valid[:, None], other=0.0
+        )
+        sink = tl.load(Sink + token * stride_sink + head, mask=row_valid, other=0.0)
+        o = o * _sigmoid(gate.to(tl.float32))
+        o = o * _sigmoid(lse2 * 0.6931471805599453 - sink.to(tl.float32))[:, None]
+        tl.store(
+            Out + token * stride_out_t + cols,
             o.to(Out.dtype.element_ty),
             mask=row_valid[:, None],
         )
@@ -489,6 +634,44 @@ def rel_attention(
     block_m = _block_m(max_query_len, group)
     # Turing has 64 KiB of shared memory per block: smaller Q and K/V tiles.
     turing = not current_platform.has_device_capability(80)
+    if turing and max_query_len == 1 and not draft and mode != MODE_OUT_LSE:
+        _rel_decode_turing_kernel[(num_kv_heads * num_splits, cache_seqlens.shape[0])](
+            q,
+            key_cache,
+            value_cache,
+            rel,
+            block_table,
+            cache_seqlens,
+            cu_seqlens_q,
+            out,
+            lse,
+            gate,
+            sinks,
+            softmax_scale,
+            num_tokens,
+            num_splits,
+            q.stride(0),
+            q.stride(1),
+            key_cache.stride(0),
+            key_cache.stride(1),
+            key_cache.stride(2),
+            rel.stride(0),
+            block_table.stride(0),
+            out.stride(0) if mode == MODE_GATED else 0,
+            gate.stride(0),
+            sinks.stride(0),
+            H=num_heads,
+            G=group,
+            GP=triton.next_power_of_2(group),
+            D=head_dim,
+            E=extent,
+            PAGE=page,
+            WINDOW=window,
+            MODE=mode,
+            BLOCK_N=_TURING_DECODE_BLOCK_N,
+            num_warps=_TURING_DECODE_WARPS,
+        )
+        return
     if turing:
         block_m = min(block_m, 64)
     tokens_per_tile = block_m // group

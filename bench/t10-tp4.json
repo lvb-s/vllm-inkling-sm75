@@ -3,23 +3,23 @@
  "decode": [
   {
    "streams": 1,
-   "per_stream": 88.24668048926159,
-   "aggregate": 88.41937458023862
+   "per_stream": 88.61726976981468,
+   "aggregate": 88.79068908443271
   },
   {
    "streams": 8,
-   "per_stream": 47.7802980161049,
-   "aggregate": 368.5098269585601
+   "per_stream": 50.36472794206409,
+   "aggregate": 367.97997479003544
   },
   {
    "streams": 16,
-   "per_stream": 36.901053591689625,
-   "aggregate": 563.9720093697538
+   "per_stream": 41.46115354435318,
+   "aggregate": 612.6747349658239
   },
   {
    "streams": 32,
-   "per_stream": 35.994718500204286,
-   "aggregate": 553.5751736151786
+   "per_stream": 41.681054176065295,
+   "aggregate": 637.1574470424289
   }
  ],
  "prefill": [
