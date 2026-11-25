@@ -1,0 +1,45 @@
+{
+ "label": "4x Tesla T10 16GB, TP=4",
+ "decode": [
+  {
+   "streams": 1,
+   "per_stream": 88.24668048926159,
+   "aggregate": 88.41937458023862
+  },
+  {
+   "streams": 8,
+   "per_stream": 47.7802980161049,
+   "aggregate": 368.5098269585601
+  },
+  {
+   "streams": 16,
+   "per_stream": 36.901053591689625,
+   "aggregate": 563.9720093697538
+  },
+  {
+   "streams": 32,
+   "per_stream": 35.994718500204286,
+   "aggregate": 553.5751736151786
+  }
+ ],
+ "prefill": [
+  {
+   "target": 1024,
+   "prompt_tokens": 1111,
+   "ttft_s": 0.3534798930049874,
+   "prefill_tok_s": 3143.0359179845186
+  },
+  {
+   "target": 8192,
+   "prompt_tokens": 8738,
+   "ttft_s": 2.391972611992969,
+   "prefill_tok_s": 3653.0518602884754
+  },
+  {
+   "target": 32768,
+   "prompt_tokens": 35071,
+   "ttft_s": 10.093883586996526,
+   "prefill_tok_s": 3474.4803323450565
+  }
+ ]
+}

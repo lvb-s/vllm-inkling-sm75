@@ -1,0 +1,2 @@
+[vllm.general_plugins]
+inkling_t10 = inkling_t10:register

@@ -1,0 +1,733 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Inkling-2-Mini под капотом: модель, ядра и порт на Turing (T10)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
+  onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'\\(',right:'\\)',display:false}]});"></script>
+<style>
+  :root {
+    --bg: #fbfaf7; --fg: #1d1d1f; --muted: #6b6b70; --accent: #2457c5; --accent2: #b4541a;
+    --code-bg: #f1efe9; --border: #dedad0; --note: #eef4ff; --warn: #fff4e5; --ok: #ecf8ef;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 16px/1.62 -apple-system, "SF Pro Text", "Segoe UI", Roboto, sans-serif; }
+  nav { position: fixed; top: 0; left: 0; bottom: 0; width: 290px; overflow-y: auto;
+        padding: 22px 18px; border-right: 1px solid var(--border); background: #f5f3ee; font-size: 14px; }
+  nav h2 { font-size: 15px; margin: 0 0 10px; }
+  nav a { color: var(--fg); text-decoration: none; display: block; padding: 3px 0; }
+  nav a:hover { color: var(--accent); }
+  nav .sub { padding-left: 14px; color: var(--muted); }
+  main { margin-left: 290px; padding: 36px 56px 120px; max-width: 1080px; }
+  h1 { font-size: 30px; line-height: 1.25; margin: 0 0 6px; }
+  h2 { font-size: 24px; margin: 56px 0 12px; padding-top: 12px; border-top: 2px solid var(--border); }
+  h3 { font-size: 19px; margin: 34px 0 8px; }
+  h4 { font-size: 16px; margin: 22px 0 6px; }
+  p, li { max-width: 860px; }
+  a { color: var(--accent); }
+  code { font: 13.5px/1.45 "SF Mono", Menlo, Consolas, monospace; background: var(--code-bg);
+         padding: 1px 5px; border-radius: 4px; }
+  pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+        padding: 14px 16px; overflow-x: auto; font: 13px/1.5 "SF Mono", Menlo, Consolas, monospace; }
+  pre code { background: none; padding: 0; }
+  pre .c { color: #7a7a7a; }
+  pre .k { color: #8a2fb8; }
+  pre .hl { background: #fff2b3; }
+  .file { font-size: 12.5px; color: var(--muted); margin: 14px 0 -8px; font-family: "SF Mono", Menlo, monospace; }
+  table { border-collapse: collapse; margin: 14px 0 18px; font-size: 14.5px; }
+  th, td { border: 1px solid var(--border); padding: 6px 10px; vertical-align: top; text-align: left; }
+  th { background: #efece4; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .box { border-radius: 8px; padding: 12px 16px; margin: 16px 0; border: 1px solid var(--border); max-width: 900px; }
+  .note { background: var(--note); border-color: #c9d8f7; }
+  .warn { background: var(--warn); border-color: #f1d1a6; }
+  .ok { background: var(--ok); border-color: #bfe3c8; }
+  .box b:first-child { display: block; margin-bottom: 4px; }
+  .lead { color: var(--muted); font-size: 17px; margin-bottom: 26px; }
+  .flow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 14px 0; }
+  .flow span { background: #fff; border: 1px solid var(--border); border-radius: 6px; padding: 4px 9px; font-size: 13.5px; }
+  .flow i { color: var(--muted); font-style: normal; }
+  svg text { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .tag { display: inline-block; font-size: 12px; padding: 0 6px; border-radius: 4px; background: #e7e2d6; color: #4b4b4b; }
+  .tag.ours { background: #ffe1c7; color: #7a3a07; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  @media (max-width: 1100px) { nav { display: none; } main { margin-left: 0; padding: 24px; } .two { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<nav>
+  <h2>Содержание</h2>
+  <a href="#map">0. Как читать</a>
+  <a href="#model">1. Модель в цифрах</a>
+  <a href="#token">2. Путь одного токена</a>
+  <a href="#attnres">3. Block Attention Residuals</a>
+  <a href="#sconv">4. Короткие свёртки</a>
+  <a href="#attn">5. Attention</a>
+  <a class="sub" href="#attn-proj">5.1 Проекции</a>
+  <a class="sub" href="#attn-prologue">5.2 Пролог: clip, τ, rel-bias</a>
+  <a class="sub" href="#attn-math">5.3 Формула с gate и sink</a>
+  <a class="sub" href="#attn-online">5.4 Online softmax и split-KV</a>
+  <a class="sub" href="#attn-kernel">5.5 Ядро <code>_rel_attention_kernel</code></a>
+  <a class="sub" href="#attn-turing">5.6 Наше ускорение декода</a>
+  <a class="sub" href="#attn-prefill">5.7 Prefill на Turing</a>
+  <a href="#moe">6. MoE</a>
+  <a href="#loop">7. Loop: 3 прохода ядра</a>
+  <a href="#tp">8. Tensor parallel и all-reduce</a>
+  <a href="#turing">9. Порт на sm_75: что и почему</a>
+  <a class="sub" href="#t-fp16">9.1 fp16 вместо bf16 MMA</a>
+  <a class="sub" href="#t-fp8">9.2 Программный FP8 E4M3</a>
+  <a class="sub" href="#t-bf16">9.3 Округление в bf16 битами</a>
+  <a class="sub" href="#t-misc">9.4 PDL, all-reduce, cuBLAS</a>
+  <a href="#vision">10. Зрение</a>
+  <a href="#profile">11. Профиль декода</a>
+  <a href="#bench">12. Бенчмарки: T10 и 2080 Ti</a>
+  <a class="sub" href="#bench-decode">12.1 Декод</a>
+  <a class="sub" href="#bench-prefill">12.2 Prefill</a>
+  <a class="sub" href="#bench-mem">12.3 Память и KV-кэш</a>
+  <a class="sub" href="#bench-why">12.4 Откуда разница</a>
+  <a href="#quality">13. Проверка качества</a>
+  <a href="#files">14. Карта файлов</a>
+  <a href="#gloss">15. Словарь</a>
+</nav>
+
+<main>
+
+<h1>Inkling-2-Mini под капотом</h1>
+<p class="lead">Как устроена модель, как её считают ядра в нашем SM75-форке vLLM и что мы поменяли, чтобы она работала и быстрее декодировала на 4× Tesla T10 и 2× RTX 2080 Ti. Описано по коду <code>overlay/vllm/models/inkling2</code> этого репозитория и замерам 25.11.2026.</p>
+
+<!-- ================================================================ -->
+<h2 id="map">0. Как читать</h2>
+
+<p>Документ идёт сверху вниз по пути токена через модель. В каждом разделе сначала математика (что считается), потом код (каким ядром и почему так). Метка <span class="tag ours">наше</span> отмечает места, которые мы писали или меняли под Turing; остальное — порт апстрима vLLM (<code>a289c722</code>) с минимальными правками.</p>
+
+<p>Три вещи, без которых остальное не читается:</p>
+<ul>
+  <li><b>Turing = sm_75.</b> У Tesla T10 нет bf16-тензорных ядер, нет <code>cp.async</code> (асинхронной загрузки в shared memory), нет аппаратного FP8 и нет PDL. Модель же целиком bf16 + FP8 KV + NVFP4 эксперты. Почти все наши правки — обходы этих четырёх дыр.</li>
+  <li><b>TP=4.</b> Каждая из 4 карт держит четверть голов attention и четверть экспертов. После каждого attention и каждого MoE делается all-reduce.</li>
+  <li><b>Декод — это латентность, а не арифметика.</b> На один токен batch=1 модель запускает сотни маленьких ядер. Скорость определяется тем, как быстро каждое ядро прочитает свои веса/KV и как мало их ждёт.</li>
+</ul>
+
+<!-- ================================================================ -->
+<h2 id="model">1. Модель в цифрах</h2>
+
+<p>Чекпойнт Inkling-2-Mini в NVFP4 (ModelOpt), архитектура <code>Inkling2LoopForConditionalGeneration</code>.</p>
+
+<table>
+<tr><th>Параметр</th><th>Значение</th><th>На одну карту при TP=4</th></tr>
+<tr><td>hidden size \(D\)</td><td class="num">2304</td><td>2304 (поток residual реплицирован)</td></tr>
+<tr><td>слоёв в чекпойнте</td><td class="num">24</td><td></td></tr>
+<tr><td>loop: ядро слоёв 6–17, проходов</td><td class="num">3</td><td>итого 6 + 12×3 + 6 = <b>48 исполнений слоя на токен</b></td></tr>
+<tr><td>головы q / kv, head_dim</td><td class="num">24 / 8, 128</td><td>6 q / 2 kv, группа GQA \(G=3\)</td></tr>
+<tr><td>local-слои (окно 1024)</td><td>все, кроме 5, 11, 17, 23</td><td></td></tr>
+<tr><td>full-слои (весь контекст)</td><td>5, 11, 17, 23</td><td></td></tr>
+<tr><td>относительный bias: \(d_{rel}\), протяжённость \(E\)</td><td class="num">16, 1024</td><td></td></tr>
+<tr><td>эксперты, top-k, intermediate</td><td class="num">128, 8, 1152</td><td>32 эксперта на карту (EP = TP)</td></tr>
+<tr><td>short conv, ширина \(W\)</td><td class="num">4</td><td></td></tr>
+<tr><td>AttnRes: слоёв в блоке</td><td class="num">6</td><td></td></tr>
+<tr><td>словарь (padded / реальный)</td><td class="num">201024 / 200058</td><td>lm_head режется по словарю</td></tr>
+<tr><td>soft-cap логитов</td><td class="num">30</td><td></td></tr>
+<tr><td>KV-кэш</td><td>FP8 E4M3, unit scale</td><td>на Turing — программное кодирование</td></tr>
+<tr><td>эксперты</td><td>NVFP4 (часть слоёв может быть MXFP8)</td><td>Humming-ядра, fp16-активации</td></tr>
+<tr><td>vision</td><td>ViT 23 слоя, 1024, 16 голов</td><td>реплицирован на всех картах</td></tr>
+</table>
+
+<p>Чем Inkling отличается от «обычного» трансформера, коротко:</p>
+<ol>
+  <li>Вместо одного residual-потока — <b>block attention residuals</b>: вход каждого подслоя — выученная softmax-смесь прошлых блоков (раздел 3).</li>
+  <li>Вместо RoPE — <b>обучаемый относительный bias</b> по расстоянию до ключа, до 1024 позиций (раздел 5.2).</li>
+  <li>K, V и выходы attention/MLP проходят через <b>короткие каузальные свёртки</b> ширины 4 (раздел 4).</li>
+  <li>q, k, r ограничены по L2-норме, V нормализован, у выхода есть <b>gate</b> и <b>attention sink</b> (раздел 5.3).</li>
+  <li><b>Loop</b>: 12 средних слоёв прогоняются трижды с «сообщениями» между проходами (раздел 7).</li>
+</ol>
+
+<!-- ================================================================ -->
+<h2 id="token">2. Путь одного токена</h2>
+
+<p>Код верхнего уровня — <code>Inkling2Model.forward</code> в <code>nvidia/model.py</code> и <code>Inkling2LoopModel.forward</code> в <code>nvidia/loop.py</code>.</p>
+
+<svg viewBox="0 0 980 300" width="100%" style="max-width:980px;background:#fff;border:1px solid #dedad0;border-radius:8px">
+  <defs><marker id="ar" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#555"/></marker></defs>
+  <g font-size="12.5">
+    <rect x="12" y="20" width="110" height="44" rx="6" fill="#eef4ff" stroke="#9db6ea"/><text x="67" y="40" text-anchor="middle">embed</text><text x="67" y="56" text-anchor="middle">+ RMSNorm</text>
+    <line x1="122" y1="42" x2="152" y2="42" stroke="#555" marker-end="url(#ar)"/>
+    <rect x="154" y="20" width="150" height="44" rx="6" fill="#fff4e5" stroke="#e6b66f"/><text x="229" y="40" text-anchor="middle">prelude: слои 0–5</text><text x="229" y="56" text-anchor="middle">1 проход</text>
+    <line x1="304" y1="42" x2="334" y2="42" stroke="#555" marker-end="url(#ar)"/>
+    <rect x="336" y="20" width="230" height="44" rx="6" fill="#ffe1c7" stroke="#d58a4a"/><text x="451" y="40" text-anchor="middle">core: слои 6–17 × 3 прохода</text><text x="451" y="56" text-anchor="middle">сообщения между проходами</text>
+    <line x1="566" y1="42" x2="596" y2="42" stroke="#555" marker-end="url(#ar)"/>
+    <rect x="598" y="20" width="150" height="44" rx="6" fill="#fff4e5" stroke="#e6b66f"/><text x="673" y="40" text-anchor="middle">coda: слои 18–23</text><text x="673" y="56" text-anchor="middle">1 проход</text>
+    <line x1="748" y1="42" x2="778" y2="42" stroke="#555" marker-end="url(#ar)"/>
+    <rect x="780" y="20" width="188" height="44" rx="6" fill="#eef4ff" stroke="#9db6ea"/><text x="874" y="40" text-anchor="middle">AttnRes-mix → norm →</text><text x="874" y="56" text-anchor="middle">lm_head → 30·tanh(z/30)</text>
+  </g>
+  <text x="20" y="100" font-size="13" font-weight="600">Одно исполнение слоя (их 48 на токен):</text>
+  <g font-size="12">
+    <rect x="12" y="114" width="118" height="54" rx="6" fill="#ecf8ef" stroke="#8fcf9f"/><text x="71" y="136" text-anchor="middle">AttnRes-mix</text><text x="71" y="152" text-anchor="middle">+ RMSNorm (q/k/v)</text>
+    <line x1="130" y1="141" x2="150" y2="141" stroke="#555" marker-end="url(#ar)"/>
+    <rect x="152" y="114" width="126" height="54" rx="6" fill="#eef4ff" stroke="#9db6ea"/><text x="215" y="132" text-anchor="middle">qkvr GEMM</text><text x="215" y="148" text-anchor="middle">q, r, gate, sink, k, v</text><text x="215" y="162" text-anchor="middle" fill="#666">6 голов/карту</text>
+    <line x1="278" y1="141" x2="298" y2="141" stroke="#555" marker-end="url(#ar)"/>
+    <rect x="300" y="114" width="126" height="54" rx="6" fill="#eef4ff" stroke="#9db6ea"/><text x="363" y="132" text-anchor="middle">пролог: conv K/V,</text><text x="363" y="148" text-anchor="middle">clip, rel-logits,</text><text x="363" y="162" text-anchor="middle">запись FP8 KV</text>
+    <line x1="426" y1="141" x2="446" y2="141" stroke="#555" marker-end="url(#ar)"/>
+    <rect x="448" y="114" width="116" height="54" rx="6" fill="#ffe1c7" stroke="#d58a4a"/><text x="506" y="136" text-anchor="middle">attention</text><text x="506" y="152" text-anchor="middle">+ gate + sink</text>
+    <line x1="564" y1="141" x2="584" y2="141" stroke="#555" marker-end="url(#ar)"/>
+    <rect x="586" y="114" width="80" height="54" rx="6" fill="#eef4ff" stroke="#9db6ea"/><text x="626" y="136" text-anchor="middle">wo GEMM</text><text x="626" y="152" text-anchor="middle">частичная</text>
+    <line x1="666" y1="141" x2="686" y2="141" stroke="#555" marker-end="url(#ar)"/>
+    <rect x="688" y="114" width="94" height="54" rx="6" fill="#f3e8ff" stroke="#b998e0"/><text x="735" y="136" text-anchor="middle">all-reduce</text><text x="735" y="152" text-anchor="middle">fp16, 4 карты</text>
+    <line x1="782" y1="141" x2="802" y2="141" stroke="#555" marker-end="url(#ar)"/>
+    <rect x="804" y="114" width="164" height="54" rx="6" fill="#ecf8ef" stroke="#8fcf9f"/><text x="886" y="132" text-anchor="middle">conv(attn_out)</text><text x="886" y="148" text-anchor="middle">+ AttnRes-mix</text><text x="886" y="162" text-anchor="middle">+ RMSNorm → вход MLP</text>
+    <line x1="886" y1="168" x2="886" y2="196" stroke="#555" marker-end="url(#ar)"/>
+    <rect x="804" y="198" width="164" height="54" rx="6" fill="#fff4e5" stroke="#e6b66f"/><text x="886" y="220" text-anchor="middle">router: σ+bias, top-8</text><text x="886" y="236" text-anchor="middle">из 128</text>
+    <line x1="804" y1="225" x2="784" y2="225" stroke="#555" marker-end="url(#ar)"/>
+    <rect x="610" y="198" width="172" height="54" rx="6" fill="#fff4e5" stroke="#e6b66f"/><text x="696" y="216" text-anchor="middle">Humming NVFP4:</text><text x="696" y="232" text-anchor="middle">w13 → SiTU → w2</text><text x="696" y="246" text-anchor="middle" fill="#666">32 эксперта/карту</text>
+    <line x1="610" y1="225" x2="590" y2="225" stroke="#555" marker-end="url(#ar)"/>
+    <rect x="488" y="198" width="100" height="54" rx="6" fill="#f3e8ff" stroke="#b998e0"/><text x="538" y="220" text-anchor="middle">combine +</text><text x="538" y="236" text-anchor="middle">all-reduce</text>
+    <line x1="488" y1="225" x2="468" y2="225" stroke="#555" marker-end="url(#ar)"/>
+    <rect x="264" y="198" width="202" height="54" rx="6" fill="#ecf8ef" stroke="#8fcf9f"/><text x="365" y="216" text-anchor="middle">partial += attn_out + conv(moe)</text><text x="365" y="232" text-anchor="middle">+ AttnRes-mix следующего слоя</text><text x="365" y="246" text-anchor="middle" fill="#666">(одно ядро conv_mix)</text>
+  </g>
+  <text x="20" y="284" font-size="12" fill="#666">Зелёное — residual-логика (раздел 3–4), голубое — GEMM и пролог, оранжевое — attention и MoE, фиолетовое — связь между картами.</text>
+</svg>
+
+<p>Видно, откуда берётся число ядер: на одно исполнение слоя приходится ~10–15 запусков (нормы, GEMM, пролог, attention, combine, all-reduce, conv_mix, router, align, два Humming GEMM, SiTU, combine, all-reduce, conv_mix). При 48 исполнениях это 500–700 ядер на токен на каждой карте; при 87 ток/с — около 11,5 мс на токен.</p>
+
+<!-- ================================================================ -->
+<h2 id="attnres">3. Block Attention Residuals</h2>
+
+<h3>Математика</h3>
+<p>В обычном трансформере вход слоя \(\ell\) — это сумма \(h_\ell = x_0 + \sum_{i&lt;\ell} f_i\). Inkling вместо этого группирует слои в блоки по 6 и хранит стек:</p>
+<ul>
+  <li>\(b_0\) — эмбеддинг токена;</li>
+  <li>\(b_1\) — сумма выходов слоёв 0–5, \(b_2\) — слоёв 6–11 и так далее (законченные блоки);</li>
+  <li>\(p\) — «partial»: сумма выходов слоёв текущего, ещё не законченного блока.</li>
+</ul>
+<p>Вход подслоя — это softmax-смесь источников \(x_n \in \{b_0,\dots,b_{k},\ p\ (+\ \text{addend})\}\) с выученным псевдо-запросом \(q \in \mathbb{R}^D\) (у каждого подслоя свой):</p>
+$$
+\text{logit}_n = \frac{q \cdot x_n}{\sqrt{D}\ \operatorname{rms}(x_n)},\qquad
+\operatorname{rms}(x) = \sqrt{\tfrac{1}{D}\textstyle\sum_d x_d^2 + \varepsilon},\qquad
+\alpha_n = \operatorname{softmax}_n(\text{logit}_n)
+$$
+$$
+\text{mix} = \sum_n \alpha_n\, \hat x_n,\quad \hat x_n = \frac{x_n}{\operatorname{rms}(x_n)}\ \ (\texttt{attn\_res\_normalize\_values}=\text{true}),\qquad
+\text{input} = \operatorname{RMSNorm}_w(\text{mix}).
+$$
+<p>Это и есть «attention по глубине»: каждый подслой сам решает, сколько брать от эмбеддинга, от ранних и поздних блоков. Нормализация значений \(\hat x_n\) делает вклад блоков сравнимым независимо от их масштаба. Для full-слоёв псевдо-запросов три (отдельные входы для q, k и v), для local-слоёв — один. Вход MLP смешивает те же блоки, но с \(p + \text{attn\_out}\) в качестве последнего источника (addend).</p>
+
+<p>После подслоя partial обновляется: \(p \leftarrow p + \text{conv}_a(\text{attn}) + \text{conv}_m(\text{moe})\). На первом слое блока старый partial становится законченным блоком \(b_{k+1}\), а новый partial начинается с нуля.</p>
+
+<h3>Код</h3>
+<p>Ядро — <code>ops/attn_res.py</code>. Один Triton-программ считает одну пару (токен, псевдо-запрос). Два варианта:</p>
+<ul>
+  <li><code>_attn_res_row_kernel</code> — для малых батчей (≤256 пар). Строка \(D=2304\) не степень двойки, поэтому её держат в регистрах как «голову» 2048 + «хвост» 256 (<code>BLOCK_A</code>, <code>BLOCK_B</code>). Источники читаются дважды: проход 1 — скалярные произведения и rms, проход 2 — взвешенная сумма.</li>
+  <li><code>_attn_res_kernel</code> — для больших батчей, кусками по 1024 и с тремя проходами.</li>
+</ul>
+<div class="file">ops/attn_res.py · _attn_res_row_kernel (сокращено)</div>
+<pre><code><span class="k">for</span> n <span class="k">in</span> tl.static_range(N_STACK + 1):            <span class="c"># блоки + partial</span>
+    xa = _load_source(*src, da, mask_a, n, ...)      <span class="c"># голова строки</span>
+    xb = _load_source(*src, db, mask_b, n, ...)      <span class="c"># хвост</span>
+    rstd = rsqrt((sum(xa*xa) + sum(xb*xb)) / D + eps)
+    logits[n] = (sum(qa*xa) + sum(qb*xb)) * rstd     <span class="c"># q уже умножен на D**-0.5 при загрузке</span>
+probs = exp(logits - max(logits)); inv_sum = 1 / sum(probs)
+<span class="k">if</span> NORMALIZE: probs = probs * inv_rms              <span class="c"># нормализованные значения</span>
+acc = sum_n probs[n] * x_n * inv_sum                 <span class="c"># второй проход по источникам</span>
+<span class="k">if</span> APPLY_NORM: acc = acc * rsqrt(mean(acc**2) + eps) * w   <span class="c"># RMSNorm следующего подслоя</span></code></pre>
+
+<div class="box note"><b>Turing</b>Выход смеси идёт прямо во вход GEMM. На sm_75 GEMM считается в fp16, поэтому ядро сразу пишет fp16 (<code>out_dtype = torch.float16</code>), а не bf16 с последующим приведением. Сам стек блоков остаётся bf16.</div>
+
+<p>В профиле декода это ядро занимает ~0,78 мс на токен: оно запускается 2–4 раза на исполнение слоя и каждый раз читает до 5 строк по 2304 элемента. Чаще всего оно не стоит отдельно, а слито с короткой свёрткой (<code>conv_mix</code>, раздел 4).</p>
+
+<!-- ================================================================ -->
+<h2 id="sconv">4. Короткие свёртки</h2>
+
+<h3>Математика</h3>
+<p>У каждого слоя четыре потока свёрток: K, V, выход attention и выход MLP. Свёртка каузальная, depthwise (каждый канал отдельно), ширины \(W=4\), с residual-членом и нормировкой:</p>
+$$
+y_t[c] = \frac{1}{\sqrt{W+1}}\Big(\sum_{k=0}^{W-1} w[c,k]\; x_{t-(W-1)+k}[c] \;+\; x_t[c]\Big)\qquad\text{(статическая)}
+$$
+<p>У full-слоёв свёртки K и V <b>динамические</b>: веса тапов зависят от входа токена, по одному набору на KV-голову:</p>
+$$
+y_t[c] = \frac{1}{\sqrt{2W+1}}\Big(\sum_{l=0}^{W-1}\big(w^{\text{stat}}[l,c] + \Delta_t[\text{head}(c), l]\big)\; x_{t-l}[c] \;+\; x_t[c]\Big),\qquad
+\Delta_t = W_{\text{proj}}\, x^{(k|v)}_t.
+$$
+<p>Смысл: дешёвое локальное смешивание соседних токенов (как в Mamba/Hyena-подобных архитектурах), которое снимает с attention работу по «соседям» и помогает местному порядку без RoPE.</p>
+
+<h3>Как это хранится</h3>
+<p>Чтобы на декоде свернуть 4 тапа, нужны входы трёх предыдущих токенов. Они лежат в <b>conv-state кэше</b> — постраничном, как KV-кэш (<code>InklingConvState</code>, <code>[num_blocks, H, N, D]</code>). Ядро свёртки одной операцией записывает текущий вход в свой слот и читает три предыдущих: из текущего батча (prefill) или из кэша (декод).</p>
+
+<h3>Код</h3>
+<ul>
+  <li><code>ops/sconv.py: _conv</code> — общая функция тапов; <code>_sconv_kernel</code> / <code>short_conv</code> — отдельная свёртка.</li>
+  <li><code>ops/sconv.py: _attn_prologue_kernel</code> — свёртки K и V внутри пролога attention (раздел 5.2).</li>
+  <li><code>ops/conv_mix.py</code> — свёртка выхода attention/MLP, слитая с обновлением partial и AttnRes-смесью следующего подслоя. На T10 это основной путь: сначала обычный all-reduce, потом одно ядро <code>conv_mix</code>.</li>
+</ul>
+<p>Порядок сложения фиксирован, как в эталоне: \((\text{residual} + \text{addend}) + y\) в fp32, затем одно округление в bf16. Поэтому в ядрах стоит <code>enable_fp_fusion=False</code>: компилятор не имеет права склеить умножение и сложение в FMA и поменять округление.</p>
+
+<!-- ================================================================ -->
+<h2 id="attn">5. Attention</h2>
+
+<h3 id="attn-proj">5.1 Проекции</h3>
+<p>Один слитый GEMM <code>qkvr</code> выдаёт шесть кусков (на карту при TP=4):</p>
+<table>
+<tr><th>Кусок</th><th>Размер на карту</th><th>Назначение</th></tr>
+<tr><td>q</td><td>6 × 128</td><td>запросы</td></tr>
+<tr><td>r</td><td>6 × 16</td><td>«относительный запрос» для bias по расстоянию</td></tr>
+<tr><td>gate</td><td>6 × 128</td><td>поэлементный gate выхода</td></tr>
+<tr><td>sink</td><td>6</td><td>логит attention sink на голову</td></tr>
+<tr><td>k, v</td><td>2 × 128 каждый</td><td>ключи и значения</td></tr>
+</table>
+<p>У local-слоёв все шесть кусков считаются из одного входа. У full-слоёв q-сторона (q, r, gate, sink), k и v проецируются из трёх разных входов (три псевдо-запроса AttnRes). Выход — GEMM <code>wo_ud</code>: частичная сумма на карту, складываемая all-reduce.</p>
+
+<h3 id="attn-prologue">5.2 Пролог: clip, τ, относительный bias</h3>
+<p>Пролог (<code>attention_prologue</code> в <code>ops/sconv.py</code>) за один запуск делает всё, что нужно до самого attention:</p>
+<ol>
+  <li><b>K:</b> свёртка, затем L2-клиппинг каждой головы: \(k \leftarrow k\cdot\min\!\big(1,\ \tfrac{c}{\lVert k\rVert+\epsilon}\big)\), \(c = 22.6274 = 16\sqrt2\).</li>
+  <li><b>V:</b> свёртка, затем RMS-нормализация без веса (<code>use_value_norm_no_gamma</code>): \(v \leftarrow v/\operatorname{rms}(v)\).</li>
+  <li>Запись K и V в paged KV-кэш в FP8 E4M3 (на Turing — программно, раздел 9.2).</li>
+  <li><b>q:</b> \(q \leftarrow \operatorname{clip}_{c}(q\odot s_q)\), где \(s_q\) — выученный масштаб на голову и канал.</li>
+  <li><b>r:</b> \(r \leftarrow \operatorname{clip}_{8}(r\odot s_r)\).</li>
+  <li><b>Только full-слои:</b> \(q\) и \(r\) умножаются на \(\tau\) (log-scaling).</li>
+  <li><b>Относительные логиты:</b> \(\text{rel}_t[h, j] = r_t[h]\cdot P[:, \text{dist}]\), где \(\text{dist} = \text{pos}_t - j\), для \(0 \le \text{dist} &lt; E\).</li>
+</ol>
+
+<h4>Зачем клиппинг</h4>
+<p>При \(\lVert q\rVert,\lVert k\rVert \le 16\sqrt2\) получается \(|q\cdot k| \le 512\), а после умножения на \(1/\sqrt{128}\) — не больше ≈45. Логиты ограничены сверху при любых весах. Это стабилизирует обучение и заодно гарантирует, что промежуточные значения помещаются в fp16 — для нас на Turing это важно.</p>
+
+<h4>Log-scaling τ</h4>
+$$
+\tau(\text{pos}) = 1 + \alpha\,\ln\max\!\Big(\frac{\text{pos}+1}{n_{\text{floor}}},\ 1\Big),\qquad \alpha = 0.1,\ n_{\text{floor}} = 8192.
+$$
+<p>До позиции 8192 \(\tau = 1\). Дальше логиты full-слоёв растут как \(\ln n\). Причина: энтропия softmax по \(n\) равновероятным ключам равна \(\ln n\). Без поправки внимание на длинном контексте «размазывается». Умножение логитов на \(1+\alpha\ln(n/n_0)\) компенсирует этот рост. Ядро — <code>_log_scaling_tau_kernel</code> в <code>ops/attention.py</code>.</p>
+
+<h4>Относительный bias вместо RoPE</h4>
+<p>Таблица \(P \in \mathbb{R}^{16\times1024}\) (<code>rel_logits_proj</code>) — по 16-мерному вектору на каждое расстояние 0…1023. Bias пары (токен \(t\), ключ \(j\)) — скалярное произведение \(r_t\) на столбец своего расстояния. Получается «обучаемый ALiBi с запросом»: модель сама выбирает, насколько ей важны близкие или дальние токены. Для расстояний ≥1024 bias у full-слоёв равен нулю, у local-слоёв такие ключи вообще вне окна (\(-\infty\)).</p>
+
+<h4>Раскладка «sheared» — самое неочевидное место</h4>
+<p>Хранить bias как матрицу \([T\times\text{seqlen}]\) дорого. Поэтому на токен хранят только окно из \(E + 256 = 1280\) столбцов, «сдвинутое» так, чтобы столбец \(c\) соответствовал ключу \(c + \lceil(\text{past} + \text{tile\_end})/128\rceil\cdot128 - 1280\). Это формат, который читает Blackwell-ядро tml_fa4 (с плиткой запросов 128). Все наши ядра читают тот же формат, чтобы не было двух раскладок. Таблица <code>shift_rel_proj</code> заранее хранит \(P\) в 8 сдвигах, чтобы загрузки были выровнены по 16 байт.</p>
+<div class="file">ops/norm.py · qr_clip_rel_tokens (суть)</div>
+<pre><code>diag  = pos + E_PAD - cdiv(pos - q_idx + tile_end, 128) * 128   <span class="c"># столбец ключа с dist = 0</span>
+diag8 = diag // 8 * 8
+table = RelProj + (diag - diag8) * (D_REL + 1) * W + E + 256 - diag8   <span class="c"># нужный из 8 сдвигов</span>
+proj  = tl.load(table + r_cols.T * W + col)          <span class="c"># [16, BLOCK_E] — столбцы P по расстояниям</span>
+pad   = tl.load(table + D_REL * W + col)             <span class="c"># 0 или -inf (правее диагонали / вне окна)</span>
+rel   = tl.dot(r, proj) + pad                        <span class="c"># [heads, BLOCK_E]</span></code></pre>
+
+<h3 id="attn-math">5.3 Формула attention с gate и sink</h3>
+<p>Для головы \(h\) токена \(t\) с видимыми ключами \(j\) (окно для local-слоёв, весь префикс для full):</p>
+$$
+s_{j} = \frac{q\cdot k_j}{\sqrt{d}} + \text{rel}[j],\qquad
+o = \frac{\sum_j e^{s_j} v_j}{\sum_j e^{s_j}},\qquad
+\text{lse} = \ln\sum_j e^{s_j}
+$$
+$$
+\boxed{\ \text{out} = o\ \odot\ \sigma(\text{gate})\ \cdot\ \sigma(\text{lse} - \text{sink})\ }
+$$
+<p><b>Откуда \(\sigma(\text{lse}-\text{sink})\).</b> Attention sink — это фиктивный ключ с логитом \(\text{sink}\) и нулевым значением. С ним</p>
+$$
+o_{\text{sink}} = \frac{\sum_j e^{s_j} v_j}{\sum_j e^{s_j} + e^{\text{sink}}} = o\cdot\frac{e^{\text{lse}}}{e^{\text{lse}} + e^{\text{sink}}} = o\cdot\sigma(\text{lse} - \text{sink}).
+$$
+<p>То есть голова может «никуда не смотреть»: если все ключи нерелевантны (\(\text{lse} \ll \text{sink}\)), выход стремится к нулю, а не к среднему по мусору. В Inkling sink свой у каждого токена (выход проекции), а не один выученный параметр. Gate \(\sigma(\text{gate})\) — поэлементный (по каналам), как в gated attention.</p>
+<p>Удобное следствие для кода: и sink, и gate применяются <i>после</i> обычного attention, им нужны только \(o\) и \(\text{lse}\). Поэтому attention-ядро возвращает \((o, \text{lse})\), а gate/sink добавляются в конце: в том же ядре (<code>MODE_GATED</code>), в combine (<code>_rel_decode_combine_kernel</code>) или отдельным <code>gate_sink</code> после prefill.</p>
+
+<h3 id="attn-online">5.4 Online softmax и split-KV</h3>
+<p>Ядро идёт по ключам блоками и держит три величины на строку: максимум \(m\), сумму \(\ell\) и аккумулятор \(a\). Для нового блока со скорами \(s\):</p>
+$$
+m' = \max(m, \max s),\quad
+\ell' = \ell\,2^{m-m'} + \sum 2^{s-m'},\quad
+a' = a\,2^{m-m'} + \sum 2^{s-m'}\,v.
+$$
+<p>Используется основание 2 (<code>exp2</code> — одна аппаратная инструкция), поэтому скоры заранее умножены на \(\log_2 e\): <code>qk_scale = softmax_scale · LOG2E</code>, и bias тоже. В конце \(o = a/\ell\), \(\text{lse}_2 = m + \log_2 \ell\).</p>
+
+<p><b>Split-KV.</b> На декоде запрос один, а ключей тысячи. Если один CTA (блок потоков) пройдёт их все, работать будет 2 CTA на карту (по одному на KV-голову) из 56 SM. Поэтому ключи делят на \(S\) частей: часть \(s\) берёт блоки ключей \(s, s+S, s+2S, \dots\) (чередованием, чтобы окно local-слоя делилось поровну). Каждая часть выдаёт свои \((o_s, \text{lse}_s)\), а ядро combine их сливает:</p>
+$$
+w_s = 2^{\text{lse}_s - \max_s \text{lse}_s},\qquad
+o = \frac{\sum_s w_s\, o_s}{\sum_s w_s},\qquad
+\text{lse} = \big(\log_2\textstyle\sum_s w_s + \max_s \text{lse}_s\big)\cdot\ln 2.
+$$
+<p>Это точное равенство, а не приближение: результат совпадает с attention одним проходом с точностью до порядка сложения в fp32. Число частей \(S\) зависит только от размера батча, а не от длины контекста. Так одна и та же CUDA-graph-запись годится для любого шага декода.</p>
+
+<h3 id="attn-kernel">5.5 Ядро <code>_rel_attention_kernel</code></h3>
+<p>Файл <code>ops/attention_sm90.py</code>. Изначально это замена Blackwell-ядер для Hopper/SM12x; на Turing оно отвечает за декод и verify (spec decode). Сетка запуска:</p>
+<pre><code>grid = (cdiv(max_query_len, tokens_per_tile),   <span class="c"># плитки запросов</span>
+        num_kv_heads * num_splits,              <span class="c"># KV-голова × часть ключей</span>
+        num_reqs)                               <span class="c"># запросы батча</span></code></pre>
+<p>Один программ берёт <code>BLOCK_M</code> строк = (токены × \(G\) голов q одной KV-головы). На декоде при TP=4 это 1 токен × 3 головы = 3 полезные строки из 16 (минимальная плитка MMA). Внутри цикла по блокам ключей:</p>
+<div class="file">ops/attention_sm90.py · основной цикл (сокращено)</div>
+<pre><code><span class="k">for</span> i <span class="k">in</span> range(num_iters):
+    n    = n_lo + split + i * num_splits                  <span class="c"># чередование частей</span>
+    keys = n * BLOCK_N + arange(BLOCK_N)
+    page = load(block_table + keys // PAGE)               <span class="c"># paged KV: номер страницы</span>
+    k    = e4m3_to_fp32(load(K + page*... )).to(fp16)     <span class="c"># FP8 → fp32 → fp16, программно</span>
+    s    = dot(q, k) * qk_scale                           <span class="c"># fp16 MMA (F16_DOT на Turing)</span>
+    s   += load(rel_row + keys, mask=dist &lt; E) * LOG2E     <span class="c"># sheared bias</span>
+    s    = where(visible, s, -inf)                        <span class="c"># каузальность и окно</span>
+    m_new = max(m_i, max(s)); alpha = exp2(m_i - m_new); p = exp2(s - m_new)
+    l_i  = l_i * alpha + sum(p)
+    v    = e4m3_to_fp32(load(V + ...)).to(fp16)
+    acc  = acc * alpha + dot(p.to(fp16), v)
+    m_i  = m_new</code></pre>
+<p>Выход по режиму:</p>
+<ul>
+  <li><code>MODE_OUT_LSE</code> — fp32 \(o\) и натуральный lse (замена tml_fa4 для prefill на Hopper);</li>
+  <li><code>MODE_GATED</code> — сразу gate и sink, bf16-выход (при одной части);</li>
+  <li><code>MODE_PARTIAL</code> — частичные \((o_s, \text{lse}_s)\) для combine.</li>
+</ul>
+
+<h3 id="attn-turing">5.6 Наше ускорение декода <span class="tag ours">наше</span></h3>
+
+<h4>Диагноз</h4>
+<p>Через Nsight Compute на T10 мы увидели две проблемы.</p>
+<ol>
+  <li><b>Спиллы регистров.</b> При <code>BLOCK_N=64</code> и <code>BLOCK_M=16</code> ядро упиралось в потолок 255 регистров на поток и выгружало 118 значений в local memory (то есть в DRAM через L1). Причина — программное FP8-декодирование: <code>e4m3_to_fp32</code> раскрывается в десяток целочисленных операций на элемент, и плитка 128×64 промежуточных значений в регистры не влезает.</li>
+  <li><b>Ядро ждёт память, а не считает.</b> На Ampere+ Triton строит программный конвейер (<code>num_stages</code>): пока считается блок \(i\), через <code>cp.async</code> уже грузится блок \(i+1\). На sm_75 <code>cp.async</code> нет, поэтому итерация — это цепочка зависимых загрузок: block_table → номер страницы → K → (считаем) → V. На SM помещается один CTA из 4 warp'ов, и перекрывать задержку нечем.</li>
+</ol>
+
+<h4>Решение</h4>
+<ul>
+  <li><b><code>BLOCK_N=16</code> на декоде</b> (при <code>block_m ≤ 16</code>). Спиллов нет, регистров хватает.</li>
+  <li><b>Больше частей ключей:</b> ×2 для full-слоёв (28 → 56 частей) и ×4 для local (9 → 36). Каждая часть короче, CTA больше. GPU держит больше независимых цепочек загрузок одновременно, и задержки перекрываются <i>между</i> CTA, раз не перекрываются внутри.</li>
+</ul>
+<div class="file">ops/attention.py · plan_decode_attention</div>
+<pre><code>work = num_reqs * num_kv_heads
+num_sms = num_compute_units()                       <span class="c"># 56 у T10</span>
+<span class="hl"><span class="c"># Turing (16-key blocks, see `rel_attention`) has no cp.async pipelining:</span>
+<span class="c"># a split is a chain of dependent loads, and more, shorter splits overlap.</span>
+turing = not current_platform.has_device_capability(80)</span>
+<span class="k">if</span> is_local:
+    <span class="k">if</span> work &lt;= (16 <span class="k">if</span> max_query_len &lt;= 2 <span class="k">else</span> 8):
+        splits = triton.cdiv(rel_extent - 1, _FA4_BLOCK_N) + 1      <span class="c"># 9 для окна 1024</span>
+        <span class="hl"><span class="k">return</span> 4 * splits <span class="k">if</span> turing <span class="k">else</span> splits</span>
+    <span class="k">return</span> 5 <span class="k">if</span> work &lt;= 16 <span class="k">else</span> 3 <span class="k">if</span> work &lt;= 32 <span class="k">else</span> 2 <span class="k">if</span> work &lt;= 64 <span class="k">else</span> 1
+splits = max(num_sms // work, min(num_sms // 8, 6 * num_sms // work))   <span class="c"># 28 при 1 запросе</span>
+<span class="hl"><span class="k">return</span> 2 * splits <span class="k">if</span> turing <span class="k">else</span> splits</span></code></pre>
+<div class="file">ops/attention_sm90.py · rel_attention</div>
+<pre><code>        <span class="hl"><span class="c"># 64-key blocks spill registers at 16 rows on Turing (255 regs).</span>
+        BLOCK_N=(16 <span class="k">if</span> block_m &lt;= 16 <span class="k">else</span> 32)</span>
+        <span class="k">if</span> turing
+        <span class="k">else</span> 64 <span class="k">if</span> block_m &gt;= 128 <span class="k">else</span> 128 <span class="k">if</span> block_m &lt;= 32 <span class="k">else</span> 64,</code></pre>
+<p>На sm_80+ поведение не изменилось. При больших батчах (local-слои, work &gt; 16) ветка Turing не срабатывает: там CTA и так хватает.</p>
+
+<h4>Результат</h4>
+<table>
+<tr><th>Микробенчмарк, одна карта</th><th class="num">было, мкс</th><th class="num">стало, мкс</th></tr>
+<tr><td>full-слой, контекст 150</td><td class="num">49</td><td class="num">15</td></tr>
+<tr><td>full-слой, контекст 1k</td><td class="num">49</td><td class="num">31</td></tr>
+<tr><td>full-слой, контекст 4k</td><td class="num">131</td><td class="num">78</td></tr>
+<tr><td>full-слой, контекст 16k</td><td class="num">306</td><td class="num">292</td></tr>
+<tr><td>local-слой (окно 1024), короткий контекст</td><td class="num">25</td><td class="num">14</td></tr>
+<tr><td>local-слой, полное окно</td><td class="num">48</td><td class="num">28</td></tr>
+</table>
+<table>
+<tr><th>Сервер целиком, A/B на одном стенде</th><th class="num">было</th><th class="num">стало</th></tr>
+<tr><td>1 поток, декод</td><td class="num">80,3 ток/с</td><td class="num">87,5 ток/с</td></tr>
+<tr><td>8 потоков, сумма скоростей потоков</td><td class="num">372 ток/с</td><td class="num">384 ток/с</td></tr>
+<tr><td>32 потока, сумма скоростей потоков</td><td class="num">1095 ток/с</td><td class="num">1155 ток/с</td></tr>
+</table>
+<div class="box warn"><b>Сумма скоростей ≠ пропускная способность</b>Строки 8 и 32 потоков — сумма скоростей отдельных потоков, а не число токенов в секунду на сервере. При <code>--max-num-seqs</code> ниже числа потоков лишние запросы ждут в очереди, а их скорость считается только с первого токена; так 32 потока дают «1155». Для сравнения старого и нового кода это годится (метрика одна и та же), но настоящая пропускная способность — в разделе 12: ~560 ток/с.</div>
+<p>На 16k выигрыш почти исчезает: там ключей так много, что CTA хватало и раньше, и ядро упирается в пропускную способность памяти.</p>
+
+<h3 id="attn-prefill">5.7 Prefill на Turing</h3>
+<p>Для prefill (много токенов запроса сразу) Triton-ядро на sm_75 медленное: без bf16 MMA и конвейера. Поэтому <code>rel_attention_turing_prefill</code> собирает attention из PyTorch-примитивов:</p>
+<ol>
+  <li>K и V запроса один раз собираются из paged-кэша в плотные fp16-тензоры (FP8 → fp16 приводит PyTorch), головы KV размножаются на группу.</li>
+  <li>Запросы режутся на куски по 512. Для каждого куска <code>_rel_bias_kernel</code> строит плотную fp16-матрицу bias \([H, 512, \text{keys}]\) из sheared-логитов: \(-\infty\) для невидимых ключей.</li>
+  <li><code>aten._scaled_dot_product_efficient_attention</code> (memory-efficient SDPA, работает на sm_75 в fp16) считает attention с этой матрицей и возвращает \(o\) и lse.</li>
+  <li>У full-слоёв на длинном контексте ключи с расстоянием ≥1024 имеют нулевой bias. Если такой «дальний» префикс ≥4096, он считается отдельно, без матрицы bias, и сливается с ближней частью той же LSE-формулой, что и в 5.4 (<code>_merge_lse</code>).</li>
+</ol>
+
+<!-- ================================================================ -->
+<h2 id="moe">6. MoE</h2>
+
+<h3>Роутер</h3>
+<p>Логиты \(l = W_g x\) по 128 экспертам считаются в fp32. Выбор top-8 идёт по \(\sigma(l_e) + b_e\): bias \(b\) участвует только в выборе (балансировка нагрузки без auxiliary loss, как в DeepSeek-V3). Веса — перенормированные сигмоиды выбранных экспертов:</p>
+$$
+\gamma_e = \text{route\_scale}\cdot\frac{\sigma(l_e)}{\sum_{e'\in\text{top8}}\sigma(l_{e'})},\qquad \text{route\_scale} = 8.
+$$
+<p>В коде это считается в лог-пространстве (<code>_log_sigmoid</code>, <code>_routing_weights</code>) для устойчивости. При равенстве скоров выигрывает меньший номер эксперта: номер упакован в младшие биты ключа сортировки (<code>_selection_keys</code>).</p>
+
+<h3>Эксперт: SiTU с soft-cap</h3>
+<p>Каждый эксперт — SwiGLU-подобный блок с ограничением амплитуды:</p>
+$$
+\operatorname{cap}_c(x) = c\tanh(x/c),\qquad
+h = \operatorname{cap}_4(g)\cdot\sigma(g)\cdot\operatorname{cap}_{25}(u)\cdot\gamma_e,\qquad
+y_e = W_2\,h,\quad [g;u] = W_{13}\,x.
+$$
+<p>Обратите внимание: сигмоида берётся от <i>несжатого</i> \(g\), а умножается на сжатый. Вес роутинга \(\gamma_e\) применяется до down-проекции. Результат \(h\) округляется в bf16 (<code>_situ</code> в <code>ops/activation.py</code>). Выход слоя — \(\sum_e y_e\).</p>
+
+<h3>NVFP4</h3>
+<p>Веса экспертов хранятся в 4 битах (E2M1: значения \(\{0, 0.5, 1, 1.5, 2, 3, 4, 6\}\) со знаком) с двумя уровнями масштаба:</p>
+$$
+w = \underbrace{q}_{\text{E2M1, 4 бита}}\ \cdot\ \underbrace{s_{\text{blk}}}_{\text{FP8 E4M3 на 16 весов}}\ \cdot\ \underbrace{s_{\text{glob}}}_{\text{fp32 на эксперта}}.
+$$
+<p>MXFP8 (если слой в нём) устроен так же: E4M3-значения и общий множитель \(2^e\) на 32 веса.</p>
+
+<h3>Как считается на T10</h3>
+<ul>
+  <li><b>EP = TP:</b> у каждой карты 32 эксперта. Токен идёт во все 8 своих экспертов; карта считает только своих, остальные строки помечаются −1.</li>
+  <li><code>select_experts</code> (<code>ops/moe_sm90.py</code>) — роутер и top-k в одном ядре. GEMM роутера на Turing — cuBLAS fp16 с fp32-выходом.</li>
+  <li><code>moe_align_block_size</code> сортирует строки по экспертам и дополняет до кратного размера плитки (<code>sorted_ids</code>, <code>expert_ids</code>). В профиле это ~0,32 мс на токен.</li>
+  <li><b>Humming</b> (<code>HummingExperts</code>) — indexed GEMM: читает 4-битные веса, распаковывает их внутри ядра и умножает. На Turing активации fp16 (у Humming нет bf16 MMA до sm_80), выход fp16. Stream-K (деление K=2304 между SM, когда активных строк мало) на Turing оставлен включённым: для fp16-выхода он полезен.</li>
+  <li><code>swiglu</code> → второй Humming GEMM (<code>w2</code>) → <code>combine</code> (сумма по 8 слотам в fp32, одно округление) → all-reduce.</li>
+</ul>
+<div class="box note"><b>Почему Humming, а не TRT-LLM-gen</b>Апстрим на Blackwell считает экспертов ядрами TRT-LLM-gen (tcgen05) с квантованными в NVFP4 активациями. На Hopper и ниже их нет. Humming — JIT-библиотека (CUDA-шаблоны, компилируются под конкретную форму), которая умеет NVFP4/MXFP8-веса на sm_75. Мы поставили Humming 0.1.20: в форке была 0.1.13 без схем ModelOpt.</div>
+
+<!-- ================================================================ -->
+<h2 id="loop">7. Loop: три прохода ядра</h2>
+<p>Слои 6–17 прогоняются трижды (<code>loop_config</code>: <code>core_start=6</code>, <code>core_end=18</code>, <code>num_passes=3</code>, <code>gate_rank=64</code>). Модель получает глубину 48 слоёв по весам 24-слойной.</p>
+<ul>
+  <li>Каждый проход начинается с состояния AttnRes <i>после prelude</i>, а не с выхода предыдущего прохода.</li>
+  <li>Информация из прошлого прохода приходит <b>сообщением</b>. Блоки предыдущего прохода образуют «банк», из него AttnRes-смесью с отдельными псевдо-запросами читаются четыре сообщения: для входов attention q/k/v и для входа MLP.</li>
+  <li>У каждого прохода свой KV-кэш и свой conv-state. KV-кэш ядра loop фактически утроен.</li>
+</ul>
+<p>Сообщение \(m\) вливается во вход подслоя \(d\) через гейт низкого ранга (<code>Inkling2MessageController</code>):</p>
+$$
+z = W_{\text{down}}\big[\operatorname{rms}(d);\ \operatorname{rms}(m)\big]\in\mathbb{R}^{64},\qquad
+\text{out} = \big(1-\tanh(W_f z)\big)\odot d + \tanh(W_g z)\odot m,
+$$
+<p>после чего идёт RMSNorm подслоя. Это похоже на ячейку GRU: forget-гейт решает, сколько оставить от текущего входа, gain-гейт — сколько добавить из прошлого прохода.</p>
+<p>Код: <code>ops/loop.py</code> — <code>pair_rms_norm</code> (нормализует пару и пишет fp16-вход GEMM) и <code>blend_rms_norm</code> (смешивание + RMSNorm одним ядром; в профиле ~0,28 мс на токен). На Turing веса контроллера переводятся в fp16, а первый GEMM считается четырьмя отдельными <code>torch.mm</code>: для формы K=4608, N=64 это быстрее батчевого fp16-ядра cuBLAS.</p>
+
+<!-- ================================================================ -->
+<h2 id="tp">8. Tensor parallel и all-reduce на T10</h2>
+<p>Каждая карта считает свои 6 голов q / 2 KV-головы и своих 32 эксперта. Выходы <code>wo_ud</code> и MoE — частичные суммы, их нужно сложить на всех картах. Это два all-reduce строки \(2304\) на исполнение слоя, то есть <b>96 all-reduce на токен</b>.</p>
+<ul>
+  <li>Апстрим на Hopper/Blackwell сливает all-reduce со свёрткой и AttnRes в одно ядро через multicast-память NVLink (<code>ops/allreduce.py</code>). На T10 этого нет (нужны sm_90+ и multicast), так что <code>Inkling2AllReduceWorkspace.create</code> возвращает <code>None</code> и путь такой: обычный all-reduce vLLM → <code>conv_mix</code>.</li>
+  <li>Custom all-reduce vLLM (через P2P) в форке имеет bf16-ядро, которое на sm_75 — «invalid device function». Плагин <code>inkling_t10</code> отправляет bf16-сообщения в NCCL, а fp16 — в P2P-ядро. Выходы GEMM на Turing fp16, поэтому горячий путь идёт через быстрое ядро.</li>
+  <li>Топология стенда T10: пары GPU0–1 и GPU2–3 на одном PCIe-свитче (PIX), между парами через CPU (PHB).</li>
+</ul>
+<p>Замер NCCL на 4 картах: ~37 мкс на один токен (4,5 КиБ), ~237 мкс на 197 токенов, ~1,9 мс на 2048. В профиле декода all-reduce занимает ~1,7 мс на токен, но реально из них ~1 мс — передача, а остальное — <b>ожидание отстающей карты</b>: all-reduce — точка синхронизации, и любая неравномерность (MoE-нагрузка, разные эксперты на картах) копится в нём.</p>
+
+<!-- ================================================================ -->
+<h2 id="turing">9. Порт на sm_75: что и почему</h2>
+
+<table>
+<tr><th>Чего нет на Turing</th><th>Что ломается</th><th>Как обошли</th><th>Где</th></tr>
+<tr><td>bf16 MMA</td><td>все GEMM и <code>tl.dot</code> в bf16</td><td>веса в fp16, активации в fp16, накопление fp32</td><td><code>ops/linear.py</code>, <code>F16_DOT</code></td></tr>
+<tr><td>FP8 (<code>cvt.e4m3x2</code>, <code>fp8e4nv</code>)</td><td>FP8 KV-кэш</td><td>кэш как uint8, кодирование/декодирование битами</td><td><code>ops/e4m3.py</code></td></tr>
+<tr><td><code>cvt.rn.bf16.f32</code></td><td>округление в bf16 в Triton</td><td>RNE на битах <span class="tag ours">наше</span></td><td><code>ops/vision.py: _bf16</code></td></tr>
+<tr><td><code>cp.async</code></td><td>нет программного конвейера Triton</td><td>меньше плитки, больше CTA <span class="tag ours">наше</span></td><td><code>plan_decode_attention</code></td></tr>
+<tr><td>PDL (<code>griddepcontrol</code>)</td><td>перекрытие соседних ядер</td><td><code>gdc_wait</code> компилируется в пустоту</td><td><code>ops/__init__.py</code></td></tr>
+<tr><td>vllm_flash_attn (sm_80+)</td><td>attention ViT</td><td>SDPA memory-efficient в fp16 <span class="tag ours">наше</span></td><td><code>nvidia/vision.py</code></td></tr>
+<tr><td>bf16 custom all-reduce</td><td>invalid device function</td><td>bf16 → NCCL, fp16 → P2P</td><td><code>plugin/inkling_t10</code></td></tr>
+<tr><td>cuBLAS fp16→fp32 out (для head)</td><td>fp32 логиты</td><td>патч форка + <code>torch.mm(..., out_dtype=fp32)</code></td><td><code>patches/patch_fork.py</code>, <code>Inkling2LogitsProcessor</code></td></tr>
+</table>
+
+<h3 id="t-fp16">9.1 fp16 вместо bf16 MMA</h3>
+<p>bf16 и fp16 — оба 16-битные, но разделены по-разному: bf16 = 8 бит экспоненты + 7 мантиссы (диапазон как у fp32), fp16 = 5 + 10 (диапазон до 65504, нормальные числа от \(6\cdot10^{-5}\)). Внутри диапазона fp16 каждое bf16-число представимо точно: у fp16 мантисса длиннее. Значит, перевод bf16 → fp16 ничего не теряет, если значения не выходят за диапазон.</p>
+<p>Для весов это верно (они малы), для входов GEMM — тоже: почти все они идут после RMSNorm или клиппинга. Поэтому:</p>
+<ul>
+  <li><code>to_turing_gemm_dtype</code> один раз после загрузки переводит веса GEMM в fp16;</li>
+  <li>нормы и AttnRes-смеси пишут сразу fp16;</li>
+  <li>GEMM, чьи выходы могут выйти за 65504 (lm_head, ViT), считаются с fp32-выходом: <code>torch.mm(x16, w16.t(), out_dtype=torch.float32)</code>;</li>
+  <li>сам residual-стек, KV и conv-state остаются bf16 (fp8 для KV), как требует модель.</li>
+</ul>
+
+<h3 id="t-fp8">9.2 Программный FP8 E4M3</h3>
+<p>Формат E4M3 (<code>float8_e4m3fn</code>): 1 бит знака, 4 экспоненты (bias 7), 3 мантиссы; максимум 448; бесконечностей нет, NaN = <code>S.1111.111</code>. Декодирование в fp32 — это перестановка битовых полей:</p>
+$$
+\text{normal: } (-1)^s\, 2^{e-7}\,(1 + m/8)\ \Rightarrow\ \text{fp32 exp} = e - 7 + 127 = e + 120,\qquad
+\text{subnormal } (e=0):\ (-1)^s\, m\cdot 2^{-9}.
+$$
+<div class="file">ops/e4m3.py · e4m3_to_fp32</div>
+<pre><code>b    = raw.to(int32)
+sign = (b &amp; 0x80) &lt;&lt; 24                       <span class="c"># знак в бит 31</span>
+exp  = (b &gt;&gt; 3) &amp; 0xF;  man = b &amp; 0x7
+normal = sign | ((exp + 120) &lt;&lt; 23) | (man &lt;&lt; 20)   <span class="c"># 3 бита мантиссы — в старшие биты fp32</span>
+sub    = man * 0.001953125 | sign             <span class="c"># 2^-9</span>
+bits   = where(exp == 0, sub, normal)
+bits   = where((exp == 15) &amp; (man == 7), sign | 0x7FC00000, bits)   <span class="c"># NaN</span></code></pre>
+<p>Кодирование (<code>f32_to_e4m3</code>) сложнее: округление к ближайшему чётному по guard- и sticky-битам, перенос при переполнении мантиссы, субнормальные числа, насыщение до ±448. Оно бит-в-бит совпадает с <code>tensor.to(torch.float8_e4m3fn)</code>. Цена: каждый ключ и значение на декоде проходят ~10 целочисленных инструкций. Именно это раздувает регистры attention-ядра (раздел 5.6).</p>
+
+<h3 id="t-bf16">9.3 Округление в bf16 битами <span class="tag ours">наше</span></h3>
+<p>Эталонный ViT в PyTorch округляет промежуточные значения в bf16 в определённых местах, и Triton-ядра <code>ops/vision.py</code> повторяют это функцией <code>_bf16(x)</code>. Старая версия делала <code>x.to(bf16).to(fp32)</code>. Это сломалось на sm_75 по двум причинам: Triton выкидывает пару приведений как тождественную, а инструкция <code>cvt.rn.bf16.f32</code> есть только с sm_80.</p>
+<p>bf16 — это старшие 16 бит fp32. Округление к ближайшему, при равенстве — к чётному (RNE):</p>
+$$
+\text{bits}' = \big(\text{bits} + \texttt{0x7FFF} + \text{lsb}\big)\ \&amp;\ \texttt{0xFFFF0000},\qquad \text{lsb} = (\text{bits} \gg 16)\ \&amp;\ 1.
+$$
+<p>Если младшие 16 бит больше половины (<code>&gt; 0x8000</code>), прибавка <code>0x7FFF</code> даёт перенос в старшую часть — округление вверх. Если меньше — переноса нет, отбрасываем. Ровно половина (<code>0x8000</code>) переносится только при нечётном lsb: так получается округление к чётному.</p>
+<div class="file">ops/vision.py</div>
+<pre><code>@triton.jit
+<span class="k">def</span> _bf16(x):
+    <span class="c"># Round to bf16 (nearest even) and back on the bits: Triton would fold a</span>
+    <span class="c"># cast pair, and cvt.rn.bf16.f32 needs sm_80.</span>
+    bits = x.to(tl.uint32, bitcast=True)
+    bits = (bits + 0x7FFF + ((bits &gt;&gt; 16) &amp; 1)) &amp; 0xFFFF0000
+    <span class="k">return</span> bits.to(tl.float32, bitcast=True)</code></pre>
+
+<h3 id="t-misc">9.4 PDL, all-reduce, cuBLAS</h3>
+<ul>
+  <li><b>PDL</b> (programmatic dependent launch, sm_90+) позволяет следующему ядру стартовать до конца предыдущего и подождать данные инструкцией <code>griddepcontrol.wait</code>. Обёртки <code>gdc_wait</code> / <code>gdc_launch_dependents</code> на Turing компилируются в пустоту, запуски идут строго по порядку потока.</li>
+  <li><b>CUDA graphs.</b> Без графов декод упирается в CPU: тысячи запусков Triton-ядер на шаг. Включены breakable CUDA graphs (<code>VLLM_USE_BREAKABLE_CUDAGRAPH=1</code>). Сам <code>_attention</code> помечен <code>@eager_break_during_capture</code>: его план зависит от разбиения батча на decode/prefill, поэтому он исполняется вне графа, а остальное — из графа.</li>
+  <li><b>Патчи форка</b> (<code>patches/patch_fork.py</code>) проверяют якоря при сборке, и обновление форка ломает сборку, а не модель. Среди них: чтение <code>hf_quant_config.json</code>, загрузка DSpark-черновика из того же чекпойнта, cuBLAS fp32-выход для head.</li>
+</ul>
+
+<!-- ================================================================ -->
+<h2 id="vision">10. Зрение</h2>
+
+<h3>Путь картинки</h3>
+<div class="flow">
+  <span>картинка</span><i>→</i><span>сетка 40×40 px, паддинг −1</span><i>→</i><span>CLIP-норм. → [−1,1]</span><i>→</i>
+  <span>патчи 20×20 → linear 1200→1024</span><i>→</i><span>+ pos-emb (32×32, билинейно)</span><i>→</i><span>+ CLS</span><i>→</i>
+  <span>23 слоя ViT, 2D-RoPE</span><i>→</i><span>слияние 2×2 → 4096 → GELU → 2304</span><i>→</i><span>вместо токенов <code>&lt;|unused_200054|&gt;</code></span>
+</div>
+<ul>
+  <li><b>Процессор</b> (<code>processing.py</code>): картинка дополняется до кратной 40 пикселям и режется на ячейки 40×40. Каждая ячейка — один токен декодера. Картинка 640×400 → сетка 10×16 = 160 токенов (наш тест: 197 токенов промпта вместе с текстом).</li>
+  <li>Шаблон чата выдаёт пару <code>&lt;|content_image|&gt;&lt;|unused_200054|&gt;</code>. Процессор заменяет её на маркер и \(\text{rows}\cdot\text{cols}\) копий pad-токена; эмбеддинги ViT подставляются только на pad-позиции.</li>
+  <li><b>Энкодер</b> (<code>nvidia/vision.py</code>): нативный патч 20 px, то есть ячейка 40 px — это 2×2 нативных патча. ViT работает на нативных патчах (+1 CLS на картинку), затем адаптер склеивает 2×2 соседей (4×1024 = 4096) и проецирует в 2304.</li>
+  <li>Слой ViT: LayerNorm → attention (16 голов по 64, интерливная 2D-RoPE: половина пар вращается по \(x\), половина по \(y\)) → layer scale \(\gamma_1\) → LayerNorm → MLP (GELU, ×4) → layer scale \(\gamma_2\). Residual-обновления с нормой следующего слоя слиты в <code>scaled_residual_norm_</code>.</li>
+</ul>
+
+<h3>Что мы сделали для T10 <span class="tag ours">наше</span></h3>
+<ol>
+  <li><b>Процессор на мультимодальный API форка.</b> Форк (vLLM 0.29.1rc0) ждёт <code>_apply_hf_processor_main(mm_items, ...)</code> и <code>get_dummy_processor_inputs</code> у builder-а. Переписали эти методы и задали <code>PromptReplacement(target=[200005, 200054])</code>.</li>
+  <li><b><code>_TuringLinear</code></b> — все линейные слои ViT: fp16-веса, fp16-вход, fp32-выход. Активации ViT могут выходить за диапазон fp16, поэтому выход не fp16.</li>
+  <li><b>Attention ViT</b> — <code>vit_torch_sdpa_wrapper</code> по последовательностям в fp16. В bf16 PyTorch на sm_75 уходит в math-путь, который строит матрицу \([H, T, T]\): на профилировании это 7 ГиБ и OOM.</li>
+  <li><b><code>_bf16</code></b> на битах (раздел 9.3).</li>
+  <li>Compose: <code>--language-model-only</code> заменён на <code>--limit-mm-per-prompt={"image": N}</code>; при 0 энкодер не создаётся.</li>
+</ol>
+<p>Энкодер занимает ~1–2 мс на карту на картинку, на фоне prefill это немного.</p>
+
+<!-- ================================================================ -->
+<h2 id="profile">11. Профиль декода</h2>
+<p>Nsight Systems, 1 поток, контекст ~200 токенов, одна карта из четырёх, <b>до</b> ускорения attention (12,5 мс на токен; GPU занят почти всё время, CPU не узкое место):</p>
+<table>
+<tr><th>Категория</th><th class="num">мс / токен</th><th>Комментарий</th></tr>
+<tr><td>cuBLAS gemv (qkvr, wo, router, контроллеры loop)</td><td class="num">~3,7</td><td>крупные — у пропускной способности; ~143 мелких по ~5 мкс упираются в задержку запуска</td></tr>
+<tr><td>Humming MoE (w13 + w2)</td><td class="num">~1,7</td><td></td></tr>
+<tr><td>all-reduce</td><td class="num">~1,7</td><td>~1 мс передача, остальное — ожидание отстающей карты</td></tr>
+<tr><td><code>_rel_attention_kernel</code></td><td class="num">~1,5</td><td>32 мкс на вызов → после ускорения ~0,8</td></tr>
+<tr><td><code>attn_res_row</code></td><td class="num">0,78</td><td></td></tr>
+<tr><td>short conv / conv_mix</td><td class="num">0,5</td><td></td></tr>
+<tr><td>lm_head</td><td class="num">~0,5</td><td>у пропускной способности</td></tr>
+<tr><td><code>moe_align_block_size</code></td><td class="num">0,32</td><td></td></tr>
+<tr><td><code>blend_rms_norm</code></td><td class="num">0,28</td><td></td></tr>
+</table>
+<p>Что можно делать дальше, по убыванию выгоды: MoE (слияние мелких шагов роутинга и align, настройка плиток Humming под 8 строк), слияние мелких gemv, выравнивание нагрузки между картами перед all-reduce, <code>attn_res</code>. Частоты T10 зафиксированы на 1590 МГц (90 из 150 Вт) майнинговыми пресетами; их без отдельного решения не трогаем.</p>
+
+<!-- ================================================================ -->
+<h2 id="bench">12. Бенчмарки: 4× T10 и 2× 2080 Ti</h2>
+<p>Один и тот же образ и код на двух стендах, 25.11.2026:</p>
+<table>
+<tr><th></th><th>4× Tesla T10 16 ГБ</th><th>2× RTX 2080 Ti 22 ГБ</th></tr>
+<tr><td>TP</td><td>4</td><td>2</td></tr>
+<tr><td>связь карт</td><td>PCIe: пары на общем свитче, между парами через CPU</td><td>NVLink (NV2)</td></tr>
+<tr><td>SM на карту</td><td class="num">56</td><td class="num">68</td></tr>
+<tr><td>лимит мощности, частота под нагрузкой</td><td>150 Вт, зафиксирована 1590 МГц</td><td>275 Вт, ~2,0 ГГц</td></tr>
+<tr><td>флаги serve</td><td colspan="2">FP8 KV, <code>--max-model-len 65536</code>, <code>--max-num-seqs 16</code>, <code>--gpu-memory-utilization 0.92</code>, breakable CUDA graphs, зрение включено</td></tr>
+</table>
+<p>Скрипт — <code>tests/bench.py</code>, сырые результаты — <code>bench/*.json</code>.</p>
+<ul>
+  <li><b>Декод:</b> N параллельных потоков, каждый генерирует ровно 512 токенов (<code>min_tokens = max_tokens</code>, temperature 0.7), промпт короткий. «На поток» — средняя скорость потока от первого до последнего токена. «Суммарно» — все сгенерированные токены, делённые на время от первого токена первого потока до последнего токена последнего. Это и есть пропускная способность сервера.</li>
+  <li><b>Prefill:</b> одиночный запрос из случайных слов длиной ~1k / 8k / 32k токенов и <code>max_tokens=1</code>. Мерится время до первого токена (TTFT), медиана из трёх. В начале промпта случайный nonce, поэтому prefix cache не срабатывает.</li>
+</ul>
+
+<h3 id="bench-decode">12.1 Декод</h3>
+<table>
+<tr><th class="num">потоков</th><th class="num">T10: на поток</th><th class="num">T10: суммарно</th><th class="num">2080 Ti: на поток</th><th class="num">2080 Ti: суммарно</th></tr>
+<tr><td class="num">1</td><td class="num">88,2</td><td class="num">88,4</td><td class="num">94,4</td><td class="num">94,6</td></tr>
+<tr><td class="num">8</td><td class="num">47,8</td><td class="num">368,5</td><td class="num">49,8</td><td class="num">382,6</td></tr>
+<tr><td class="num">16</td><td class="num">36,9</td><td class="num">564,0</td><td class="num">36,8</td><td class="num">562,0</td></tr>
+<tr><td class="num">32</td><td class="num">36,0</td><td class="num">553,6</td><td class="num">36,6</td><td class="num">561,8</td></tr>
+</table>
+<p>Все значения в ток/с. При 32 потоках одновременно идут только 16 (<code>--max-num-seqs 16</code>), остальные ждут в очереди, поэтому суммарная скорость не растёт после 16.</p>
+
+<h3 id="bench-prefill">12.2 Prefill</h3>
+<table>
+<tr><th class="num">токенов промпта</th><th class="num">T10: TTFT, с</th><th class="num">T10: ток/с</th><th class="num">2080 Ti: TTFT, с</th><th class="num">2080 Ti: ток/с</th></tr>
+<tr><td class="num">~1,1k</td><td class="num">0,35</td><td class="num">3143</td><td class="num">0,59</td><td class="num">1876</td></tr>
+<tr><td class="num">~8,7k</td><td class="num">2,39</td><td class="num">3653</td><td class="num">2,11</td><td class="num">4127</td></tr>
+<tr><td class="num">~35k</td><td class="num">10,09</td><td class="num">3474</td><td class="num">9,52</td><td class="num">3684</td></tr>
+</table>
+
+<h3 id="bench-mem">12.3 Память и KV-кэш</h3>
+<table>
+<tr><th>На одну карту</th><th class="num">T10, TP=4</th><th class="num">2080 Ti, TP=2</th></tr>
+<tr><td>веса после загрузки</td><td class="num">5,18 ГиБ</td><td class="num">9,57 ГиБ</td></tr>
+<tr><td>под KV-кэш (после профилирования и CUDA graphs)</td><td class="num">8,36 ГиБ</td><td class="num">9,41 ГиБ</td></tr>
+<tr><td>KV-кэш по отчёту vLLM, токенов</td><td class="num">163 339</td><td class="num">166 540</td></tr>
+<tr><td>запросов по 65 536 токенов одновременно</td><td class="num">2,49</td><td class="num">2,54</td></tr>
+</table>
+<p>Оценка на токен по формуле. Один слой хранит на токен K и V по 128 значений на KV-голову, в FP8 по 1 байту: \(2\cdot 128 = 256\) байт на голову. Full-слои (5, 11, 17, 23) при loop исполняются \(1 + 3 + 3 + 1 = 8\) раз, у каждого исполнения свой кэш:</p>
+$$
+\text{full: } 8 \cdot 8\ \text{голов} \cdot 256\ \text{Б} = 16\ \text{КиБ на токен (на весь стенд)}.
+$$
+<p>Остальные 40 исполнений — local-слои с окном 1024. Им нужно не больше 1024 позиций на запрос, то есть \(40\cdot 8\cdot 256\ \text{Б}\cdot 1024 = 80\ \text{МиБ}\) на запрос независимо от длины контекста. При TP=4 на карту приходится четверть этого, при TP=2 — половина. Практическая цифра — последняя строка таблицы: на обоих стендах помещается ~2,5 запроса по 64k токенов или пропорционально больше коротких.</p>
+
+<div class="box warn"><b>Не разобрано</b>По отчёту vLLM на токен уходит ~54 КБ на карту на T10 и ~59 КБ на 2080 Ti, то есть почти одинаково, хотя при TP=4 у карты вдвое меньше KV-голов. Это больше формульной оценки и не делится на TP так, как ожидалось. Скорее всего, дело в том, как vLLM раскладывает full- и local-группы по общим страницам, но мы это не проверяли.</div>
+
+<h3 id="bench-why">12.4 Откуда разница</h3>
+<ul>
+  <li><b>Один поток: 2080 Ti быстрее на 7 %.</b> При TP=2 каждая карта читает за токен вдвое больше весов, чем при TP=4, но у 2080 Ti память быстрее, частота выше (2,0 против 1,59 ГГц) и больше SM. Всё это примерно компенсирует друг друга. Выигрыш даёт связь: all-reduce между двумя картами по NVLink короче, чем между четырьмя по PCIe через CPU, а на токен таких all-reduce 96 (раздел 8). Большая часть декода при batch=1 упирается в задержку запуска мелких ядер, а она на обоих стендах одинаковая; поэтому разница небольшая.</li>
+  <li><b>16 и 32 потока: потолок ~560 ток/с на обоих стендах.</b> Совпадение на разном железе указывает, что при 16 запросах упор не в GPU. Вероятная причина — CPU: <code>_attention</code> исполняется вне CUDA-графа (раздел 9.4), и 48 его вызовов на шаг запускаются из Python. Это гипотеза: профиль при batch=16 мы не снимали.</li>
+  <li><b>Prefill 1k: T10 быстрее.</b> Короткий prefill состоит из фиксированных накладных расходов (планирование, запуск ядер, all-reduce); у четырёх карт на каждую приходится вдвое меньше работы.</li>
+  <li><b>Prefill 8k и 32k: 2080 Ti быстрее на 6–13 %.</b> Здесь GEMM и attention считают много, и выигрывают более быстрые карты. От 8k к 32k скорость падает на обоих стендах: стоимость full-слоёв растёт квадратично по длине (раздел 5.7).</li>
+</ul>
+
+<!-- ================================================================ -->
+<h2 id="quality">13. Проверка качества</h2>
+<p>A/B на одном образе: в контейнер временно подмонтировали старые <code>attention.py</code> и <code>attention_sm90.py</code>. По тексту старая и новая сборки отличаются только этими двумя файлами. Каждый вариант прогнан дважды, чтобы видеть собственный разброс сервера.</p>
+<table>
+<tr><th>Сравнение</th><th class="num">одинаковых продолжений из 12</th><th class="num">|Δ logprob| среднее</th><th class="num">p99</th></tr>
+<tr><td>старый vs старый (шум)</td><td class="num">6</td><td class="num">0,0089</td><td class="num">0,095</td></tr>
+<tr><td>новый vs новый (шум)</td><td class="num">3</td><td class="num">0,0104</td><td class="num">0,123</td></tr>
+<tr><td>старый vs новый (3 пары)</td><td class="num">3–4</td><td class="num">0,0076–0,0103</td><td class="num">0,086–0,123</td></tr>
+</table>
+<p>Арифметика: 40/40 во всех четырёх прогонах. Поиск значения по ключу в контексте ~6k токенов: 12/12 во всех прогонах. Разница между старым и новым кодом не больше, чем между двумя прогонами одного кода: greedy-генерация с параллельными запросами недетерминирована (разный состав батча → другой порядок сложения), и это перекрывает эффект правки. Математически правка точная: меняется только разбиение суммы по ключам, а слияние частей по LSE точное.</p>
+
+<!-- ================================================================ -->
+<h2 id="files">14. Карта файлов</h2>
+<p>Пути от корня репозитория.</p>
+<table>
+<tr><th>Файл</th><th>Что внутри</th></tr>
+<tr><td><code>Dockerfile</code></td><td>сборка поверх <code>vllm-2080ti:0.2.2-post3</code>: Humming, overlay, плагин, патчи</td></tr>
+<tr><td><code>docker-compose.yml</code></td><td>флаги serve: TP=4, FP8 KV, лимит картинок, breakable CUDA graphs</td></tr>
+<tr><td><code>plugin/inkling_t10/__init__.py</code></td><td>регистрация архитектур; разрешение bf16 на sm_75; bf16 all-reduce → NCCL</td></tr>
+<tr><td><code>patches/patch_fork.py</code></td><td>правки файлов форка с проверкой якорей</td></tr>
+<tr><td><code>overlay/.../inkling2/configs.py</code></td><td>конфиги, loop, расчёт «исполнений слоя»</td></tr>
+<tr><td><code>.../processing.py</code></td><td>препроцессинг картинок и мультимодальный процессор <span class="tag ours">наше</span></td></tr>
+<tr><td><code>.../nvidia/model.py</code></td><td>сборка модели, AttnRes-стек, порядок подслоёв, загрузка весов</td></tr>
+<tr><td><code>.../nvidia/loop.py</code></td><td>prelude / core × 3 / coda, контроллеры сообщений</td></tr>
+<tr><td><code>.../nvidia/attention.py</code></td><td>модуль attention: проекции, выбор decode/prefill-пути</td></tr>
+<tr><td><code>.../nvidia/sconv.py</code>, <code>conv_state.py</code></td><td>модуль коротких свёрток и conv-state кэш</td></tr>
+<tr><td><code>.../nvidia/moe.py</code></td><td>роутер и эксперты, выбор бэкенда</td></tr>
+<tr><td><code>.../nvidia/vision.py</code></td><td>ViT-энкодер; <code>_TuringLinear</code>, SDPA fp16 <span class="tag ours">наше</span></td></tr>
+<tr><td><code>.../nvidia/ops/attention.py</code></td><td>план splits <span class="tag ours">наше</span>, combine, gate/sink, τ, Blackwell-ядра</td></tr>
+<tr><td><code>.../nvidia/ops/attention_sm90.py</code></td><td><code>_rel_attention_kernel</code> (BLOCK_N <span class="tag ours">наше</span>), prefill на Turing</td></tr>
+<tr><td><code>.../nvidia/ops/sconv.py</code></td><td>свёртки, пролог attention, sheared rel-логиты</td></tr>
+<tr><td><code>.../nvidia/ops/norm.py</code></td><td>RMSNorm, клиппинг q/r, расчёт rel-логитов</td></tr>
+<tr><td><code>.../nvidia/ops/attn_res.py</code></td><td>AttnRes-смесь + RMSNorm</td></tr>
+<tr><td><code>.../nvidia/ops/conv_mix.py</code></td><td>свёртка + AttnRes одним вызовом</td></tr>
+<tr><td><code>.../nvidia/ops/moe.py</code>, <code>moe_sm90.py</code>, <code>activation.py</code></td><td>роутинг, Humming-эксперты, SiTU</td></tr>
+<tr><td><code>.../nvidia/ops/linear.py</code></td><td>GEMM, fp16-путь Turing, K-group линейки</td></tr>
+<tr><td><code>.../nvidia/ops/e4m3.py</code></td><td>программный FP8</td></tr>
+<tr><td><code>.../nvidia/ops/loop.py</code></td><td><code>pair_rms_norm</code>, <code>blend_rms_norm</code></td></tr>
+<tr><td><code>.../nvidia/ops/vision.py</code></td><td>ядра ViT; <code>_bf16</code> <span class="tag ours">наше</span></td></tr>
+<tr><td><code>.../nvidia/ops/allreduce.py</code></td><td>слитый all-reduce для NVLink multicast (на T10 не используется)</td></tr>
+<tr><td><code>tests/decode_speed.py</code>, <code>tests/image_chat.py</code></td><td>замер декода и проверка зрения</td></tr>
+<tr><td><code>tests/bench.py</code>, <code>bench/*.json</code></td><td>бенчмарк декода и prefill (раздел 12) и его результаты</td></tr>
+<tr><td><code>tests/quality_ab.py</code></td><td>greedy A/B двух сборок (раздел 13)</td></tr>
+<tr><td><code>base/Dockerfile</code></td><td>сборка базового образа SM75-форка vLLM</td></tr>
+</table>
+
+<!-- ================================================================ -->
+<h2 id="gloss">15. Словарь</h2>
+<table>
+<tr><td><b>CTA</b></td><td>блок потоков CUDA (в Triton — один «program»). Исполняется на одном SM.</td></tr>
+<tr><td><b>SM</b></td><td>streaming multiprocessor; у Tesla T10 их 56.</td></tr>
+<tr><td><b>warp</b></td><td>32 потока, исполняющие одну инструкцию.</td></tr>
+<tr><td><b>спилл регистров</b></td><td>не помещающиеся в регистры значения выгружаются в local memory (физически DRAM через кэш). Это медленно.</td></tr>
+<tr><td><b>MMA</b></td><td>инструкция тензорного ядра (матричное умножение плиткой). На Turing: fp16/int8, без bf16.</td></tr>
+<tr><td><b>cp.async</b></td><td>асинхронное копирование global → shared (sm_80+). Даёт перекрыть загрузку следующего блока со счётом текущего.</td></tr>
+<tr><td><b>PDL</b></td><td>programmatic dependent launch (sm_90+): следующее ядро стартует раньше конца предыдущего.</td></tr>
+<tr><td><b>GQA</b></td><td>grouped-query attention: несколько голов q делят одну голову k/v (здесь 3 на 1).</td></tr>
+<tr><td><b>paged KV</b></td><td>KV-кэш страницами фиксированного размера; адрес ключа ищется через <code>block_table</code>.</td></tr>
+<tr><td><b>split-KV</b></td><td>деление ключей одного запроса между несколькими CTA со слиянием по LSE.</td></tr>
+<tr><td><b>LSE</b></td><td>log-sum-exp, \(\ln\sum e^{s_j}\): нормировка softmax, нужна для слияния частей и для sink.</td></tr>
+<tr><td><b>RNE</b></td><td>round to nearest, ties to even — стандартное округление IEEE.</td></tr>
+<tr><td><b>TP / EP</b></td><td>tensor parallel (делим головы и матрицы) / expert parallel (делим экспертов). Здесь EP = TP = 4.</td></tr>
+<tr><td><b>gemv</b></td><td>умножение матрицы на вектор — GEMM при batch=1; ограничено чтением весов.</td></tr>
+</table>
+
+</main>
+</body>
+</html>

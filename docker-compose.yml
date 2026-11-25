@@ -1,0 +1,49 @@
+# Inkling-2-Mini (NVFP4/MXFP8 experts) on 4x Tesla T10 or 2x RTX 2080 Ti.
+# Build the images first (see README), copy .env.example to .env and set the model path.
+services:
+  vllm:
+    image: ${VLLM_IMAGE:-vllm-inkling-sm75:latest}
+    pull_policy: ${PULL_POLICY:-never}
+    container_name: ${INSTANCE:-vllm-inkling2-mini}
+    runtime: nvidia
+    ipc: host
+    network_mode: host
+    restart: unless-stopped
+    working_dir: /opt/vllm-def
+    volumes:
+      - ${VLLM_MODELS_HOST}:/models:ro
+      - ${VLLM_TRITON_CACHE:-./cache/triton}:/root/.triton
+      - ${VLLM_HF_CACHE:-./cache/hf}:/root/.cache
+    environment:
+      NVIDIA_VISIBLE_DEVICES: ${VLLM_GPUS:-0,1,2,3}
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      VLLM_API_KEY: ${VLLM_API_KEY:-}
+      HF_HUB_OFFLINE: "1"
+      # The fork enables breakable CUDA graphs by default only for Inkling v1. Without graphs,
+      # decode is bound by the CPU launching thousands of Triton kernels per step.
+      VLLM_USE_BREAKABLE_CUDAGRAPH: "1"
+    command:
+      - vllm
+      - serve
+      - ${VLLM_MODEL_DIR}
+      - --served-model-name=${VLLM_SERVED_NAME:-Inkling-2-Mini}
+      - --host=0.0.0.0
+      - --port=${PORT:-8011}
+      - --tensor-parallel-size=${VLLM_TP:-4}
+      - --dtype=bfloat16
+      # 0 = text only (the image encoder is not built).
+      - '--limit-mm-per-prompt={"image": ${VLLM_MM_IMAGE_LIMIT:-0}}'
+      - --reasoning-parser=inkling
+      - --kv-cache-dtype=fp8
+      - --max-model-len=${VLLM_MAX_MODEL_LEN:-32768}
+      - --max-num-seqs=${VLLM_MAX_NUM_SEQS:-8}
+      - --gpu-memory-utilization=${VLLM_GPU_MEMORY_UTILIZATION:-0.90}
+      # The bf16 custom all-reduce is an invalid device function on sm_75; the
+      # plugin leaves those messages on NCCL. fp16 (GEMM outputs, up to 8 MB) goes
+      # to the P2P kernel. Long prefills exceed that limit and stay on NCCL.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:${PORT:-8011}/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 10
+      start_period: 1800s

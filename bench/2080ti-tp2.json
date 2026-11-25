@@ -1,0 +1,45 @@
+{
+ "label": "2x RTX 2080 Ti 22GB (NVLink), TP=2",
+ "decode": [
+  {
+   "streams": 1,
+   "per_stream": 94.3827333131133,
+   "aggregate": 94.56743533525247
+  },
+  {
+   "streams": 8,
+   "per_stream": 49.770317375112356,
+   "aggregate": 382.6067143108295
+  },
+  {
+   "streams": 16,
+   "per_stream": 36.8405171955231,
+   "aggregate": 562.0457312203413
+  },
+  {
+   "streams": 32,
+   "per_stream": 36.613966586071726,
+   "aggregate": 561.8388883226091
+  }
+ ],
+ "prefill": [
+  {
+   "target": 1024,
+   "prompt_tokens": 1111,
+   "ttft_s": 0.5921810199943138,
+   "prefill_tok_s": 1876.115516182312
+  },
+  {
+   "target": 8192,
+   "prompt_tokens": 8699,
+   "ttft_s": 2.107993007004552,
+   "prefill_tok_s": 4126.674031220453
+  },
+  {
+   "target": 32768,
+   "prompt_tokens": 35063,
+   "ttft_s": 9.517123753001215,
+   "prefill_tok_s": 3684.201331199767
+  }
+ ]
+}
